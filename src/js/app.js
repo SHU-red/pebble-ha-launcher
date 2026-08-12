@@ -404,10 +404,33 @@ function payloadValue(payload, keyName) {
  */
 function parseConfigResponse(response) {
   var text = response;
-  if (text.charAt(0) !== '{') {
-    text = decodeURIComponent(text);
+  if (typeof text !== 'string') {
+    return {};
   }
-  return JSON.parse(text);
+  // 1) Plain JSON (possibly URL-encoded JSON from Clay).
+  try {
+    if (text.charAt(0) === '{') {
+      return JSON.parse(text);
+    }
+    var decoded = decodeURIComponent(text);
+    if (decoded.charAt(0) === '{') {
+      return JSON.parse(decoded);
+    }
+  } catch (err) { /* fall through to form parsing */ }
+  // 2) URL-encoded form/query string (BaseUrl=...&Token=...&ConfirmEnabled=...).
+  var form = {};
+  var pairs = decodeURIComponent(text).split('&');
+  for (var i = 0; i < pairs.length; i++) {
+    if (!pairs[i]) continue;
+    var kv = pairs[i].split('=');
+    var k = kv[0];
+    var v = kv.length > 1 ? kv[1] : '';
+    form[k] = form[k] !== undefined ? form[k] + ',' + v : v;
+  }
+  if (Object.keys(form).length > 0) {
+    return form;
+  }
+  return {};
 }
 
 Pebble.addEventListener('ready', function() {
@@ -450,13 +473,14 @@ Pebble.addEventListener('webviewclosed', function(e) {
     saveConfig(config);
     console.log('webviewclosed: config saved');
 
-    // Tell the watch whether to confirm before executing.
+    // Tell the watch whether to confirm before executing, and confirm the save.
     var dict = {};
     dict.ConfirmEnabled = config.confirm;
+    dict.ConfigSaved = 1;
     Pebble.sendAppMessage(dict, function() {
-      console.log('webviewclosed: sent ConfirmEnabled=' + config.confirm);
+      console.log('webviewclosed: sent ConfirmEnabled=' + config.confirm + ' ConfigSaved');
     }, function(err) {
-      console.log('webviewclosed: failed to send ConfirmEnabled: ' + JSON.stringify(err));
+      console.log('webviewclosed: failed to send config: ' + JSON.stringify(err));
     });
   } catch (err) {
     console.log('webviewclosed: parse failed, keeping old config: ' + err);

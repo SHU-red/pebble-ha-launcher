@@ -40,7 +40,8 @@
       "ResultText",
       "ConfirmEnabled",
       "BaseUrl",
-      "Token"
+      "Token",
+      "ConfigSaved"
     ],
     "resources": {
       "media": [

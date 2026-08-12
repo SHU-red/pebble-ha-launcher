@@ -844,6 +844,16 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     APP_LOG(APP_LOG_LEVEL_INFO, "ConfirmEnabled set to %d", s_confirm_enabled ? 1 : 0);
     return;
   }
+  if ((t = dict_find(iter, MESSAGE_KEY_ConfigSaved))) {
+    // Phone settings were saved: acknowledge visibly so the save is not silent.
+    if (s_dialog_active) {
+      dialog_show_final(true, "Settings saved");
+    } else {
+      dialog_create();
+      dialog_show_final(true, "Settings saved");
+    }
+    return;
+  }
   APP_LOG(APP_LOG_LEVEL_INFO, "Unrecognized AppMessage payload");
 }
 
