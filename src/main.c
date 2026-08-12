@@ -717,7 +717,6 @@ static void push_edit_window(void) {
 
 static Window *s_main_window;
 static MenuLayer *s_main_menu;
-static TextLayer *s_empty_text;
 
 static uint16_t main_get_num_sections(MenuLayer *menu_layer, void *callback_context) {
   return 2;
@@ -725,7 +724,8 @@ static uint16_t main_get_num_sections(MenuLayer *menu_layer, void *callback_cont
 
 static uint16_t main_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                   void *callback_context) {
-  return section_index == SECTION_ACTIONS ? 1 : s_shortcut_count;
+  return section_index == SECTION_ACTIONS ? 1 :
+         (s_shortcut_count > 0 ? s_shortcut_count : 1);
 }
 
 static int16_t main_get_header_height(MenuLayer *menu_layer, uint16_t section_index,
@@ -745,12 +745,15 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(ICON_PLUS_IDX));
     menu_cell_basic_draw(ctx, cell_layer, "Edit shortcuts", NULL, icon);
     gbitmap_destroy(icon);
-  } else {
+  } else if (cell_index->row < s_shortcut_count) {
     Shortcut *sc = &s_shortcuts[cell_index->row];
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
     menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key,
                          sc->area[0] ? sc->area : NULL, icon);
     gbitmap_destroy(icon);
+  } else {
+    menu_cell_basic_draw(ctx, cell_layer, "No shortcuts yet",
+                         "Select Edit shortcuts to add", NULL);
   }
 }
 
@@ -759,12 +762,8 @@ static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
     push_edit_window();
   } else if (cell_index->row < s_shortcut_count) {
     execute_shortcut(&s_shortcuts[cell_index->row]);
-  }
-}
-
-static void main_update_empty_state(void) {
-  if (s_empty_text) {
-    layer_set_hidden(text_layer_get_layer(s_empty_text), s_shortcut_count > 0);
+  } else {
+    push_edit_window();
   }
 }
 
@@ -784,28 +783,15 @@ static void main_window_load(Window *window) {
   menu_layer_set_click_config_onto_window(s_main_menu, window);
   menu_layer_pad_bottom_enable(s_main_menu, true);
   layer_add_child(root, menu_layer_get_layer(s_main_menu));
-
-  s_empty_text = text_layer_create(GRect(8, 72, bounds.size.w - 16, 60));
-  text_layer_set_font(s_empty_text, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text_alignment(s_empty_text, GTextAlignmentCenter);
-  text_layer_set_overflow_mode(s_empty_text, GTextOverflowModeWordWrap);
-  text_layer_set_background_color(s_empty_text, GColorClear);
-  text_layer_set_text_color(s_empty_text, GColorBlack);
-  text_layer_set_text(s_empty_text, "No shortcuts yet\nSelect Edit shortcuts to add");
-  layer_add_child(root, text_layer_get_layer(s_empty_text));
-  main_update_empty_state();
 }
 
 static void main_window_unload(Window *window) {
   menu_layer_destroy(s_main_menu);
-  text_layer_destroy(s_empty_text);
   s_main_menu = NULL;
-  s_empty_text = NULL;
 }
 
 static void main_window_appear(Window *window) {
   menu_layer_reload_data(s_main_menu);
-  main_update_empty_state();
 }
 
 static void push_main_window(void) {

@@ -49,5 +49,9 @@ module.exports = [
         'label': 'Confirm before executing'
       }
     ]
+  },
+  {
+    'type': 'submit',
+    'defaultValue': 'Save Settings'
   }
 ];
