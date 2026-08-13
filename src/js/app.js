@@ -20,6 +20,36 @@ var MAX_SHORTCUTS = 64;
 var EXECUTE_TIMEOUT_MS = 10000;
 var BROWSE_TIMEOUT_MS = 20000;
 
+// Runs inside the config page (serialized by Clay into the page HTML). On
+// submit, ALSO write the serialized form values into the webview's
+// localStorage: the Pebble phone app copies that localStorage back into the
+// app JS on every settings-screen close (persistLocalStorage), regardless of
+// whether the JS session is alive. The app JS then recovers the config on
+// 'ready' — so saving settings persists even when the webviewclosed response
+// is dropped. Everything referenced here must exist in the page context.
+var customClay = function (minified) {
+  var clayInstance = this;
+  clayInstance.on(clayInstance.EVENTS.AFTER_BUILD, function () {
+    var form = document.getElementById('main-form');
+    if (!form) return;
+    form.addEventListener('submit', function () {
+      try {
+        // Clay's serialize() wraps each value as {value: ...}; normalize to
+        // plain values, matching the format clay itself uses in getSettings.
+        var raw = clayInstance.serialize();
+        var norm = {};
+        for (var key in raw) {
+          if (raw.hasOwnProperty(key)) {
+            var v = raw[key];
+            norm[key] = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+          }
+        }
+        localStorage.setItem('clay-settings', JSON.stringify(norm));
+      } catch (err) { /* best effort */ }
+    });
+  });
+};
+
 // Monotonic generation counter for browse requests: if the user re-enters the
 // edit window while a previous fetch chain is still streaming, the stale chain
 // is dropped instead of interleaving with the newer one.
@@ -433,8 +463,42 @@ function parseConfigResponse(response) {
   return {};
 }
 
+/**
+ * Recover the config from Clay's persisted settings. The config page writes
+ * its serialized values into the webview's localStorage on submit; the Pebble
+ * phone app copies that localStorage back into this JS on every settings
+ * screen close (even when the JS session is not running). Importing here makes
+ * saving deterministic regardless of whether webviewclosed was delivered.
+ */
+function importClaySettings() {
+  try {
+    var raw = localStorage.getItem(CLAY_SETTINGS_KEY);
+    if (!raw) return;
+    var s = JSON.parse(raw);
+    function plain(k) {
+      var v = s[k];
+      return (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+    }
+    var cfg = loadConfig();
+    var changed = false;
+    if (plain('BaseUrl')) { cfg.baseUrl = normalizeBaseUrl(plain('BaseUrl')); changed = true; }
+    if (plain('Token')) { cfg.token = plain('Token'); changed = true; }
+    if (plain('ConfirmEnabled') !== undefined) {
+      cfg.confirm = plain('ConfirmEnabled') ? 1 : 0;
+      changed = true;
+    }
+    if (changed) {
+      saveConfig(cfg);
+      console.log('ready: recovered config from clay-settings');
+    }
+  } catch (err) {
+    console.log('ready: clay-settings import failed: ' + err);
+  }
+}
+
 Pebble.addEventListener('ready', function() {
   console.log('JS ready');
+  importClaySettings();
 });
 
 Pebble.addEventListener('showConfiguration', function() {
@@ -451,7 +515,7 @@ Pebble.addEventListener('showConfiguration', function() {
 
     // Instantiate per config-open (event handling is done manually here so the
     // values are stored under our own key and ConfirmEnabled is forwarded).
-    var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+    var clay = new Clay(clayConfig, customClay, { autoHandleEvents: false });
     Pebble.openURL(clay.generateUrl());
   } catch (err) {
     console.log('showConfiguration: failed: ' + err);
