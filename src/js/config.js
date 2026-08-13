@@ -61,7 +61,7 @@ module.exports = [
         'type': 'color',
         'messageKey': 'AccentColor',
         'label': 'Accent color',
-        'defaultValue': 198
+        'defaultValue': 21930  // 0x0055AA = GColorCobaltBlue (24-bit RGB)
       },
       {
         'type': 'select',

@@ -25,15 +25,13 @@
 #define PERSIST_KEY_TOUCH 7          // int32: 1 = native touch navigation enabled
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
-#define DEFAULT_ACCENT_ARGB8 198     // GColorCobaltBlue
+#define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
 
 #define REQUEST_TIMEOUT_MS 10000     // execute request timeout
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
 
 #define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
-#define ICON_ARROW_UP_IDX 89         // index of ICON_ARROW_UP in the icon table
-#define ICON_ARROW_DOWN_IDX 90       // index of ICON_ARROW_DOWN in the icon table
 
 // ---------------------------------------------------------------------------
 // Icon table: index == pebble.resources.media order in package.json.
@@ -163,6 +161,7 @@ static char s_base_url[256];
 static char s_token[256];
 static GColor s_accent;
 static uint8_t s_accent_argb;
+static uint32_t s_accent_hex;
 static bool s_dark_mode;
 static bool s_touch_enabled;
 
@@ -213,17 +212,19 @@ static void persist_load(void) {
   persist_read_string(PERSIST_KEY_BASEURL, s_base_url, sizeof(s_base_url));
   persist_read_string(PERSIST_KEY_TOKEN, s_token, sizeof(s_token));
 
-  s_accent_argb = (uint8_t)(persist_read_int(PERSIST_KEY_ACCENT) & 0xFF);
-  if (s_accent_argb == 0) {
-    s_accent_argb = DEFAULT_ACCENT_ARGB8;
+  s_accent_hex = (uint32_t)persist_read_int(PERSIST_KEY_ACCENT);
+  if (s_accent_hex <= 255) {
+    // 0 = unset; <=255 = the legacy broken GColor8-byte value -> use the default.
+    s_accent_hex = DEFAULT_ACCENT_HEX;
   }
-  s_accent = (GColor){ .argb = s_accent_argb };
+  s_accent = GColorFromHEX(s_accent_hex);
+  s_accent_argb = s_accent.argb;
   s_dark_mode = persist_read_int(PERSIST_KEY_DARKMODE) != 0;
   s_touch_enabled = persist_read_int(PERSIST_KEY_TOUCH) != 0;
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
-                                uint8_t accent_argb, bool dark_mode, bool touch_enabled) {
+                                uint32_t accent_hex, bool dark_mode, bool touch_enabled) {
   if (base_url) {
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
@@ -236,10 +237,11 @@ static void persist_save_config(const char *base_url, const char *token, bool co
   }
   s_confirm_enabled = confirm;
   persist_write_int(PERSIST_KEY_CONFIRM, s_confirm_enabled ? 1 : 0);
-  if (accent_argb != 0) {
-    s_accent_argb = accent_argb;
-    s_accent = (GColor){ .argb = s_accent_argb };
-    persist_write_int(PERSIST_KEY_ACCENT, s_accent_argb);
+  if (accent_hex != 0) {
+    s_accent_hex = accent_hex;
+    s_accent = GColorFromHEX(s_accent_hex);
+    s_accent_argb = s_accent.argb;
+    persist_write_int(PERSIST_KEY_ACCENT, (int32_t)s_accent_hex);
   }
   s_dark_mode = dark_mode;
   persist_write_int(PERSIST_KEY_DARKMODE, s_dark_mode ? 1 : 0);
@@ -441,14 +443,6 @@ static void dialog_unload(Window *window) {
 
 static void start_execute(const char *key);
 
-static void action_menu_did_close(ActionMenu *menu, const ActionMenuItem *performed_action,
-                                  void *context) {
-  ActionMenuLevel *root = action_menu_get_root_level(menu);
-  if (root) {
-    action_menu_hierarchy_destroy(root, NULL, NULL);
-  }
-}
-
 static void start_execute(const char *key) {
   dialog_show_working("Sending...");
   DictionaryIterator *iter;
@@ -495,7 +489,6 @@ static bool s_pending_active;
 
 static Window *s_edit_window;
 static MenuLayer *s_edit_menu;
-static ActionBarLayer *s_edit_bar;
 static TextLayer *s_edit_status;
 static bool s_edit_visible;
 
@@ -683,35 +676,6 @@ static void unpick_script(uint16_t row) {
   edit_render();
 }
 
-static void pick_action_cb(ActionMenu *menu, const ActionMenuItem *action, void *context) {
-  uint16_t row = (uint16_t)(uintptr_t)action_menu_item_get_action_data(action);
-  if (row < s_script_count) {
-    if (shortcut_index_for_key(s_scripts[row].key) >= 0) {
-      unpick_script(row);
-    } else {
-      pick_script(row);
-    }
-  }
-  action_menu_close(menu, true);
-}
-
-static void open_pick_menu(uint16_t row) {
-  ScriptEntry *e = &s_scripts[row];
-  bool picked = shortcut_index_for_key(e->key) >= 0;
-  ActionMenuLevel *level = action_menu_level_create(1);
-  action_menu_level_add_action(level, picked ? "Unpick" : "Pick", pick_action_cb,
-                               (void *)(uintptr_t)row);
-  ActionMenuConfig config = {
-    .root_level = level,
-    .context = NULL,
-    .colors = { .background = GColorBlack, .foreground = s_accent },
-    .will_close = NULL,
-    .did_close = action_menu_did_close,
-    .align = ActionMenuAlignCenter,
-  };
-  action_menu_open(&config);
-}
-
 // ---- menu callbacks ----
 
 static uint16_t edit_get_num_sections(MenuLayer *menu_layer, void *callback_context) {
@@ -759,7 +723,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     GBitmap *check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_draw_bitmap_in_rect(ctx, check, GRect(bounds.size.w - 30, 7, 22, 22));
+    graphics_draw_bitmap_in_rect(ctx, check, GRect(bounds.size.w - 26, 8, 20, 20));
     gbitmap_destroy(check);
   }
 
@@ -802,9 +766,16 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
 }
 
 static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
-  if (cell_index->row < s_script_count) {
-    open_pick_menu(cell_index->row);
+  if (cell_index->row >= s_script_count) {
+    return;
   }
+  // Direct pick/unpick toggle - the full-screen info stays visible.
+  if (shortcut_index_for_key(s_scripts[cell_index->row].key) >= 0) {
+    unpick_script(cell_index->row);
+  } else {
+    pick_script(cell_index->row);
+  }
+  menu_layer_reload_data(s_edit_menu);
 }
 
 // ---- window handlers ----
@@ -816,22 +787,8 @@ static void edit_window_load(Window *window) {
   // Notification-style picker: white page regardless of the app theme.
   window_set_background_color(window, GColorWhite);
 
-  // Native right-edge action bar (like PebbleOS notifications): up/down
-  // navigation and the select (pick/unpick) affordance. Touch taps on the bar
-  // are zoned into the corresponding button events by the system.
-  s_edit_bar = action_bar_layer_create();
-  action_bar_layer_add_to_window(s_edit_bar, window);
-  GBitmap *up_icon = gbitmap_create_with_resource(icon_resource(ICON_ARROW_UP_IDX));
-  GBitmap *down_icon = gbitmap_create_with_resource(icon_resource(ICON_ARROW_DOWN_IDX));
-  GBitmap *sel_icon = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
-  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_UP, up_icon);
-  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_DOWN, down_icon);
-  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_SELECT, sel_icon);
-
-  GRect menu_bounds = bounds;
-  menu_bounds.size.w -= ACTION_BAR_WIDTH;
-
-  s_edit_menu = menu_layer_create(menu_bounds);
+  // No action bar: the picker is a full-bleed native-notification page.
+  s_edit_menu = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_edit_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = edit_get_num_sections,
     .get_num_rows = edit_get_num_rows,
@@ -857,10 +814,8 @@ static void edit_window_load(Window *window) {
 
 static void edit_window_unload(Window *window) {
   menu_layer_destroy(s_edit_menu);
-  action_bar_layer_destroy(s_edit_bar);
   text_layer_destroy(s_edit_status);
   s_edit_menu = NULL;
-  s_edit_bar = NULL;
   s_edit_status = NULL;
   window_destroy(s_edit_window);
   s_edit_window = NULL;
@@ -932,7 +887,7 @@ static void swap_shortcuts(int32_t a, int32_t b) {
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 4;
+  return 3;
 }
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
@@ -946,14 +901,6 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   } else if (cell_index->row == 2) {
     menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
                          "Refresh names and icons from Home Assistant", NULL);
-  } else {
-    // Bottom entry: three vertical accent dots - back to the shortcuts.
-    GRect bounds = layer_get_bounds(cell_layer);
-    int16_t cy = bounds.size.h / 2;
-    graphics_context_set_fill_color(ctx, s_accent);
-    for (int i = -1; i <= 1; i++) {
-      graphics_fill_circle(ctx, GPoint(14, cy + i * 6), 2);
-    }
   }
 }
 
@@ -962,10 +909,8 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     push_edit_window();
   } else if (cell_index->row == 1) {
     push_reorder_window();
-  } else if (cell_index->row == 2) {
-    push_update_window();
   } else {
-    window_stack_pop(true);
+    push_update_window();
   }
 }
 
@@ -1157,7 +1102,7 @@ static uint16_t main_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
 //! keep a comfortable touch target.
 static int16_t main_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index,
                                     void *callback_context) {
-  return cell_index->row == 0 ? 30 : 48;
+  return cell_index->row == 0 ? 15 : 48;
 }
 
 static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
@@ -1165,11 +1110,12 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
   if (row == 0) {
-    // Narrow entry row: three vertical accent dots (the menu affordance).
+    // Narrow entry row: three horizontal accent dots, centered.
+    int16_t cx = bounds.size.w / 2;
     int16_t cy = bounds.size.h / 2;
     graphics_context_set_fill_color(ctx, s_accent);
     for (int i = -1; i <= 1; i++) {
-      graphics_fill_circle(ctx, GPoint(14, cy + i * 6), 2);
+      graphics_fill_circle(ctx, GPoint(cx + i * 6, cy), 2);
     }
     return;
   }
@@ -1356,7 +1302,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       base_t->value->cstring,
       tok_t ? tok_t->value->cstring : NULL,
       conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled,
-      acc_t ? (uint8_t)(acc_t->value->int32 & 0xFF) : 0,
+      acc_t ? (uint32_t)acc_t->value->int32 : 0,
       dark_t ? dark_t->value->int32 != 0 : s_dark_mode,
       touch_t ? touch_t->value->int32 != 0 : s_touch_enabled);
     apply_accent();
@@ -1378,7 +1324,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dict_write_cstring(out, MESSAGE_KEY_BaseUrl, s_base_url);
       dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
       dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
-      dict_write_int32(out, MESSAGE_KEY_AccentColor, s_accent_argb);
+      dict_write_int32(out, MESSAGE_KEY_AccentColor, (int32_t)s_accent_hex);
       dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
       dict_write_int32(out, MESSAGE_KEY_TouchEnabled, s_touch_enabled ? 1 : 0);
       dict_write_end(out);
