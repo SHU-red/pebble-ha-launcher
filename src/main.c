@@ -153,6 +153,7 @@ typedef struct {
   char name[48];
   char area[32];
   uint8_t icon_idx;
+  uint8_t missing;  // 1 = script no longer exists in Home Assistant
 } Shortcut;
 
 static Shortcut s_shortcuts[MAX_SHORTCUTS];
@@ -197,8 +198,13 @@ static void persist_load(void) {
   }
   s_shortcut_count = (uint16_t)count;
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
-    if (persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, &s_shortcuts[i], sizeof(Shortcut))
-        != (int)sizeof(Shortcut)) {
+    int n = persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, &s_shortcuts[i], sizeof(Shortcut));
+    if (n >= (int)(sizeof(Shortcut) - 1)) {
+      // New format (or old format without the appended 'missing' byte).
+      if (n < (int)sizeof(Shortcut)) {
+        s_shortcuts[i].missing = 0;
+      }
+    } else {
       memset(&s_shortcuts[i], 0, sizeof(Shortcut));
     }
   }
@@ -494,6 +500,8 @@ static TextLayer *s_edit_status;
 static bool s_edit_visible;
 
 static void edit_render(void);
+static void metadata_apply(void);
+static bool s_edit_update_mode;
 
 static void edit_begin_collect(int32_t count) {
   s_script_count = 0;
@@ -547,8 +555,58 @@ static void edit_collect_script(DictionaryIterator *iter) {
   uint16_t have = (uint16_t)(s_script_count + 1);
   if (have >= s_script_expected) {
     edit_commit_pending();
-    edit_render();
+    if (s_edit_update_mode) {
+      metadata_apply();
+    } else {
+      edit_render();
+    }
   }
+}
+
+//! Update-only pass: refresh names/areas/icons from the fetched list, mark
+//! scripts that no longer exist as missing. Never adds/removes/reorders.
+static void edit_show_status(const char *text, GColor color);
+
+static void metadata_pop_cb(void *data) {
+  if (s_edit_window) {
+    window_stack_pop(true);
+  }
+}
+
+static void metadata_apply(void) {
+  for (uint16_t i = 0; i < s_shortcut_count; i++) {
+    s_shortcuts[i].missing = 1;
+  }
+  uint16_t updated = 0;
+  for (uint16_t j = 0; j < s_script_count; j++) {
+    int32_t idx = shortcut_index_for_key(s_scripts[j].key);
+    if (idx >= 0) {
+      Shortcut *sc = &s_shortcuts[idx];
+      snprintf(sc->name, sizeof(sc->name), "%s",
+               s_scripts[j].name[0] ? s_scripts[j].name : s_scripts[j].key);
+      snprintf(sc->area, sizeof(sc->area), "%s", s_scripts[j].area);
+      sc->icon_idx = s_scripts[j].icon_idx;
+      sc->missing = 0;
+      updated++;
+    }
+  }
+  persist_save();
+
+  uint16_t missing = 0;
+  for (uint16_t i = 0; i < s_shortcut_count; i++) {
+    if (s_shortcuts[i].missing) {
+      missing++;
+    }
+  }
+  char msg[64];
+  if (missing > 0) {
+    snprintf(msg, sizeof(msg), "Updated %u, %u missing", updated, missing);
+    edit_show_status(msg, GColorRed);
+  } else {
+    snprintf(msg, sizeof(msg), "Updated %u shortcuts", updated);
+    edit_show_status(msg, GColorGreen);
+  }
+  app_timer_register(1500, metadata_pop_cb, NULL);
 }
 
 static void edit_show_status(const char *text, GColor color) {
@@ -811,7 +869,8 @@ static void edit_window_unload(Window *window) {
 static void edit_window_appear(Window *window) {
   s_edit_visible = true;
   edit_begin_collect(0);
-  edit_show_status("Fetching...", GColorBlack);
+  edit_show_status(s_edit_update_mode ? "Updating..." : "Fetching...",
+                   s_edit_update_mode ? GColorBlack : GColorBlack);
 
   DictionaryIterator *iter;
   AppMessageResult res = app_message_outbox_begin(&iter);
@@ -830,6 +889,7 @@ static void edit_window_disappear(Window *window) {
 }
 
 static void push_edit_window(void) {
+  s_edit_update_mode = false;
   if (!s_edit_window) {
     s_edit_window = window_create();
     window_set_window_handlers(s_edit_window, (WindowHandlers){
@@ -840,6 +900,11 @@ static void push_edit_window(void) {
     });
   }
   window_stack_push(s_edit_window, true);
+}
+
+static void push_update_window(void) {
+  s_edit_update_mode = true;
+  push_edit_window();
 }
 
 static void push_submenu_window(void);
@@ -867,7 +932,7 @@ static void swap_shortcuts(int32_t a, int32_t b) {
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 3;
+  return 4;
 }
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
@@ -878,6 +943,9 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   } else if (cell_index->row == 1) {
     menu_cell_basic_draw(ctx, cell_layer, "Change Order",
                          "Select, move with up/down, select to drop", NULL);
+  } else if (cell_index->row == 2) {
+    menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
+                         "Refresh names and icons from Home Assistant", NULL);
   } else {
     // Bottom entry: three vertical accent dots - back to the shortcuts.
     GRect bounds = layer_get_bounds(cell_layer);
@@ -894,6 +962,8 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     push_edit_window();
   } else if (cell_index->row == 1) {
     push_reorder_window();
+  } else if (cell_index->row == 2) {
+    push_update_window();
   } else {
     window_stack_pop(true);
   }
@@ -1107,8 +1177,20 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     Shortcut *sc = &s_shortcuts[row - 1];
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
     menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key,
-                         sc->area[0] ? sc->area : NULL, icon);
+                         sc->missing ? "Missing in Home Assistant"
+                                     : (sc->area[0] ? sc->area : NULL),
+                         icon);
     gbitmap_destroy(icon);
+    if (sc->missing) {
+      // Red exclamation: the script no longer exists in HA.
+      GRect b = layer_get_bounds(cell_layer);
+      graphics_context_set_fill_color(ctx, GColorRed);
+      graphics_fill_circle(ctx, GPoint(b.size.w - 16, 16), 8);
+      graphics_context_set_text_color(ctx, GColorWhite);
+      graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                         GRect(b.size.w - 24, 8, 16, 16),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    }
   } else {
     menu_cell_basic_draw(ctx, cell_layer, "No shortcuts yet",
                          "Open Shortcuts to add", NULL);
