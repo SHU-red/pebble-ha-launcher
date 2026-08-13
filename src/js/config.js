@@ -41,20 +41,6 @@ module.exports = [
     'items': [
       {
         'type': 'heading',
-        'defaultValue': 'Behavior'
-      },
-      {
-        'type': 'toggle',
-        'messageKey': 'ConfirmEnabled',
-        'label': 'Confirm before executing'
-      }
-    ]
-  },
-  {
-    'type': 'section',
-    'items': [
-      {
-        'type': 'heading',
         'defaultValue': 'Appearance'
       },
       {

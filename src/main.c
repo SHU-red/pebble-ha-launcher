@@ -152,6 +152,7 @@ typedef struct {
   char area[32];
   uint8_t icon_idx;
   uint8_t missing;  // 1 = script no longer exists in Home Assistant
+  uint8_t confirm;  // 1 = require approval before executing
 } Shortcut;
 
 static Shortcut s_shortcuts[MAX_SHORTCUTS];
@@ -198,10 +199,13 @@ static void persist_load(void) {
   s_shortcut_count = (uint16_t)count;
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
     int n = persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, &s_shortcuts[i], sizeof(Shortcut));
-    if (n >= (int)(sizeof(Shortcut) - 1)) {
-      // New format (or old format without the appended 'missing' byte).
-      if (n < (int)sizeof(Shortcut)) {
-        s_shortcuts[i].missing = 0;
+    if (n >= (int)(sizeof(Shortcut) - 2)) {
+      // New format, or legacy blobs missing the appended bytes.
+      if (n == (int)(sizeof(Shortcut) - 1)) {
+        s_shortcuts[i].confirm = 0;      // missing-era blob
+      } else if (n < (int)sizeof(Shortcut)) {
+        s_shortcuts[i].missing = 0;      // pre-missing blob
+        s_shortcuts[i].confirm = 0;
       }
     } else {
       memset(&s_shortcuts[i], 0, sizeof(Shortcut));
@@ -275,6 +279,19 @@ typedef struct {
 
 static ConfirmCtx s_confirm_ctx;
 
+// Row-level execution feedback: the executing shortcut's row turns green
+// ('LAUNCHED') while sending and after success, red ('FAILED') on error.
+typedef enum {
+  EXEC_NONE = 0,
+  EXEC_LAUNCHED = 1,
+  EXEC_FAILED = 2,
+} ExecState;
+
+static int32_t s_exec_row = -1;
+static ExecState s_exec_state = EXEC_NONE;
+
+static MenuLayer *s_main_menu;
+
 static GColor theme_bg(void);
 static GColor theme_fg(void);
 static GColor theme_muted(void);
@@ -318,7 +335,10 @@ static void dialog_dismiss_cb(void *data) {
 
 static void request_timeout_cb(void *data) {
   s_timeout_timer = NULL;
-  dialog_show_final(false, "Timeout");
+  if (s_exec_row >= 0) {
+    s_exec_state = EXEC_FAILED;
+    menu_layer_reload_data(s_main_menu);
+  }
 }
 
 static void pulse_tick_cb(void *data) {
@@ -444,7 +464,12 @@ static void dialog_unload(Window *window) {
 static void start_execute(const char *key);
 
 static void start_execute(const char *key) {
-  dialog_show_working("Sending...");
+  int32_t idx = shortcut_index_for_key(key);
+  if (idx >= 0) {
+    s_exec_row = 1 + (int32_t)idx;
+    s_exec_state = EXEC_LAUNCHED;
+    menu_layer_reload_data(s_main_menu);
+  }
   DictionaryIterator *iter;
   AppMessageResult res = app_message_outbox_begin(&iter);
   if (res == APP_MSG_OK) {
@@ -453,19 +478,13 @@ static void start_execute(const char *key) {
   }
   if (res != APP_MSG_OK) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send ScriptKey (%d)", (int)res);
-    dialog_show_final(false, "Send failed");
+    if (s_exec_row >= 0) {
+      s_exec_state = EXEC_FAILED;
+      menu_layer_reload_data(s_main_menu);
+    }
     return;
   }
   s_timeout_timer = app_timer_register(REQUEST_TIMEOUT_MS, request_timeout_cb, NULL);
-}
-
-static void execute_shortcut(const Shortcut *sc) {
-  if (s_confirm_enabled) {
-    // One more SELECT on the orange approval screen; BACK cancels.
-    dialog_show_confirm(sc);
-  } else {
-    start_execute(sc->key);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,11 +1109,145 @@ static void push_reorder_window(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Shortcut window: per-shortcut approval mode (OFF / ON) + execute (CONFIRM)
+// ---------------------------------------------------------------------------
+
+#define SHORTCUT_BAR_H 32
+
+static Window *s_shortcut_window;
+static Layer *s_shortcut_layer;
+static uint16_t s_shortcut_idx;
+static uint8_t s_shortcut_bar;   // 0 = OFF, 1 = ON, 2 = CONFIRM
+
+static void shortcut_layer_update(Layer *layer, GContext *ctx) {
+  GRect b = layer_get_bounds(layer);
+  Shortcut *sc = &s_shortcuts[s_shortcut_idx];
+
+  // White notification-style page.
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, b, 0, GCornerNone);
+
+  // Accent banner: icon left, name beside it.
+  const int16_t banner_h = 36;
+  graphics_context_set_fill_color(ctx, s_accent);
+  graphics_fill_rect(ctx, GRect(0, 0, b.size.w, banner_h), 0, GCornerNone);
+  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(10, 4, 30, 25));
+  gbitmap_destroy(icon);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(46, 8, b.size.w - 52, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  // Hint.
+  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_draw_text(ctx, "UP/DOWN choose, SELECT apply",
+                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(10, b.size.h - SHORTCUT_BAR_H - 26, b.size.w - 20, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+  // Bottom bar: OFF | ON | CONFIRM, the active segment accent-filled.
+  static const char *labels[] = { "OFF", "ON", "CONFIRM" };
+  int16_t seg = b.size.w / 3;
+  for (int i = 0; i < 3; i++) {
+    GRect r = GRect(i * seg, b.size.h - SHORTCUT_BAR_H, seg, SHORTCUT_BAR_H);
+    graphics_context_set_fill_color(ctx, i == s_shortcut_bar ? s_accent : GColorLightGray);
+    graphics_fill_rect(ctx, r, 0, GCornerNone);
+    graphics_context_set_text_color(ctx, i == s_shortcut_bar ? GColorBlack : GColorDarkGray);
+    graphics_draw_text(ctx, labels[i], fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(r.origin.x, r.origin.y + (SHORTCUT_BAR_H - 18) / 2, seg, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  }
+}
+
+static void shortcut_up_click(ClickRecognizerRef rec, void *ctx) {
+  s_shortcut_bar = (s_shortcut_bar + 2) % 3;
+  layer_mark_dirty(s_shortcut_layer);
+}
+
+static void shortcut_down_click(ClickRecognizerRef rec, void *ctx) {
+  s_shortcut_bar = (s_shortcut_bar + 1) % 3;
+  layer_mark_dirty(s_shortcut_layer);
+}
+
+static void shortcut_select_click(ClickRecognizerRef rec, void *ctx) {
+  if (s_shortcut_idx >= s_shortcut_count) {
+    return;
+  }
+  Shortcut *sc = &s_shortcuts[s_shortcut_idx];
+  switch (s_shortcut_bar) {
+    case 0:  // OFF: never approve
+      sc->confirm = 0;
+      persist_save();
+      window_stack_pop(true);
+      break;
+    case 1:  // ON: require approval
+      sc->confirm = 1;
+      persist_save();
+      window_stack_pop(true);
+      break;
+    default: // CONFIRM: execute now
+      window_stack_pop(true);
+      if (sc->confirm) {
+        dialog_show_confirm(sc);
+      } else {
+        start_execute(sc->key);
+      }
+      break;
+  }
+}
+
+static void shortcut_back_click(ClickRecognizerRef rec, void *ctx) {
+  window_stack_pop(true);
+}
+
+static void shortcut_click_config_provider(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_UP, shortcut_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, shortcut_down_click);
+  window_single_click_subscribe(BUTTON_ID_SELECT, shortcut_select_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, shortcut_back_click);
+}
+
+static void shortcut_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, GColorWhite);
+  s_shortcut_layer = layer_create(bounds);
+  layer_set_update_proc(s_shortcut_layer, shortcut_layer_update);
+  layer_add_child(root, s_shortcut_layer);
+}
+
+static void shortcut_window_unload(Window *window) {
+  layer_destroy(s_shortcut_layer);
+  s_shortcut_layer = NULL;
+  window_destroy(s_shortcut_window);
+  s_shortcut_window = NULL;
+}
+
+static void push_shortcut_window(uint16_t idx) {
+  if (idx >= s_shortcut_count) {
+    return;
+  }
+  s_shortcut_idx = idx;
+  // Default highlight shows the current mode.
+  s_shortcut_bar = s_shortcuts[idx].confirm ? 1 : 0;
+  s_shortcut_window = window_create();
+  window_set_window_handlers(s_shortcut_window, (WindowHandlers){
+    .load = shortcut_window_load,
+    .unload = shortcut_window_unload,
+  });
+  window_set_click_config_provider(s_shortcut_window, shortcut_click_config_provider);
+  window_stack_push(s_shortcut_window, true);
+}
+
+// ---------------------------------------------------------------------------
 // Main window
 // ---------------------------------------------------------------------------
 
 static Window *s_main_window;
-static MenuLayer *s_main_menu;
 
 static uint16_t main_get_num_sections(MenuLayer *menu_layer, void *callback_context) {
   return 1;
@@ -1118,6 +1271,19 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                           void *callback_context) {
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
+
+  // Execution feedback row: green 'LAUNCHED' (sending/success), red 'FAILED'.
+  if (row == (uint16_t)s_exec_row) {
+    graphics_context_set_fill_color(ctx, s_exec_state == EXEC_FAILED ? GColorRed : GColorGreen);
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, s_exec_state == EXEC_FAILED ? "FAILED" : "LAUNCHED",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(10, (bounds.size.h - 22) / 2, bounds.size.w - 20, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    return;
+  }
+
   if (row == 0) {
     // Narrow entry row: three horizontal accent dots, centered.
     int16_t cx = bounds.size.w / 2;
@@ -1137,10 +1303,11 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     graphics_context_set_fill_color(ctx, selected ? s_accent : theme_bg());
     graphics_fill_rect(ctx, b, 0, GCornerNone);
 
-    // Icon: accent when unselected, bright/inverse (white) when selected.
+    // Icon tint matches the text color (black on the accent selection,
+    // theme foreground otherwise) - not inverted.
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, selected ? GColorWhite : s_accent);
+    graphics_context_set_fill_color(ctx, selected ? GColorBlack : theme_fg());
     graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 24) / 2, 24, 24));
     gbitmap_destroy(icon);
 
@@ -1179,7 +1346,7 @@ static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   if (row == 0) {
     push_submenu_window();
   } else if (row <= s_shortcut_count) {
-    execute_shortcut(&s_shortcuts[row - 1]);
+    push_shortcut_window(row - 1);
   } else {
     push_submenu_window();
   }
@@ -1296,7 +1463,10 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     int32_t code = t->value->int32;
     Tuple *text_t = dict_find(iter, MESSAGE_KEY_ResultText);
     const char *text = text_t ? text_t->value->cstring : "";
-    if (s_dialog_active) {
+    if (s_exec_row >= 0) {
+      s_exec_state = (code == 200) ? EXEC_LAUNCHED : EXEC_FAILED;
+      menu_layer_reload_data(s_main_menu);
+    } else if (s_dialog_active) {
       if (code == 200) {
         dialog_show_final(true, "Done!");
       } else {
@@ -1382,7 +1552,10 @@ static void outbox_sent(DictionaryIterator *iter, void *context) {
 
 static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
   APP_LOG(APP_LOG_LEVEL_ERROR, "AppMessage outbox failed");
-  if (s_dialog_active) {
+  if (s_exec_row >= 0) {
+    s_exec_state = EXEC_FAILED;
+    menu_layer_reload_data(s_main_menu);
+  } else if (s_dialog_active) {
     dialog_show_final(false, "Send failed");
   } else if (s_edit_visible) {
     edit_show_status_error("Send failed");
