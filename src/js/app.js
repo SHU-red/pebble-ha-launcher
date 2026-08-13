@@ -134,7 +134,9 @@ var MDI_ICONS = [
   'weather-fog',        // 85
   'bell-off',           // 86
   'shuffle',            // 87
-  'repeat'              // 88
+  'repeat',             // 88
+  'arrow-up',           // 89
+  'arrow-down'          // 90
 ];
 
 var MDI_ICON_INDEX = {};

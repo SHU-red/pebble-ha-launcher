@@ -30,6 +30,8 @@
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
 
 #define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
+#define ICON_ARROW_UP_IDX 89         // index of ICON_ARROW_UP in the icon table
+#define ICON_ARROW_DOWN_IDX 90       // index of ICON_ARROW_DOWN in the icon table
 
 // ---------------------------------------------------------------------------
 // Icon table: index == pebble.resources.media order in package.json.
@@ -126,6 +128,8 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_BELL_OFF,
   RESOURCE_ID_ICON_SHUFFLE,
   RESOURCE_ID_ICON_REPEAT,
+  RESOURCE_ID_ICON_ARROW_UP,
+  RESOURCE_ID_ICON_ARROW_DOWN,
 };
 
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
@@ -480,6 +484,7 @@ static bool s_pending_active;
 
 static Window *s_edit_window;
 static MenuLayer *s_edit_menu;
+static ActionBarLayer *s_edit_bar;
 static TextLayer *s_edit_status;
 static bool s_edit_visible;
 
@@ -712,10 +717,6 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(10, y, bounds.size.w - 20, 20),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, shortcut_index_for_key(e->key) >= 0 ? "SELECT: unpick" : "SELECT: pick",
-                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(10, bounds.size.h - 28, bounds.size.w - 20, 20),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 }
 
 static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
@@ -732,7 +733,22 @@ static void edit_window_load(Window *window) {
 
   window_set_background_color(window, GColorBlack);
 
-  s_edit_menu = menu_layer_create(bounds);
+  // Native right-edge action bar (like PebbleOS notifications): up/down
+  // navigation and the select (pick/unpick) affordance. Touch taps on the bar
+  // are zoned into the corresponding button events by the system.
+  s_edit_bar = action_bar_layer_create();
+  action_bar_layer_add_to_window(s_edit_bar, window);
+  GBitmap *up_icon = gbitmap_create_with_resource(icon_resource(ICON_ARROW_UP_IDX));
+  GBitmap *down_icon = gbitmap_create_with_resource(icon_resource(ICON_ARROW_DOWN_IDX));
+  GBitmap *sel_icon = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
+  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_UP, up_icon);
+  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_DOWN, down_icon);
+  action_bar_layer_set_icon(s_edit_bar, BUTTON_ID_SELECT, sel_icon);
+
+  GRect menu_bounds = bounds;
+  menu_bounds.size.w -= ACTION_BAR_WIDTH;
+
+  s_edit_menu = menu_layer_create(menu_bounds);
   menu_layer_set_callbacks(s_edit_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = edit_get_num_sections,
     .get_num_rows = edit_get_num_rows,
@@ -747,7 +763,7 @@ static void edit_window_load(Window *window) {
   menu_layer_set_highlight_colors(s_edit_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_edit_menu));
 
-  s_edit_status = text_layer_create(GRect(8, (bounds.size.h - 60) / 2, bounds.size.w - 16, 60));
+  s_edit_status = text_layer_create(GRect(8, (bounds.size.h - 60) / 2, bounds.size.w - 20, 60));
   text_layer_set_font(s_edit_status, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_edit_status, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_edit_status, GTextOverflowModeWordWrap);
@@ -758,8 +774,10 @@ static void edit_window_load(Window *window) {
 
 static void edit_window_unload(Window *window) {
   menu_layer_destroy(s_edit_menu);
+  action_bar_layer_destroy(s_edit_bar);
   text_layer_destroy(s_edit_status);
   s_edit_menu = NULL;
+  s_edit_bar = NULL;
   s_edit_status = NULL;
   window_destroy(s_edit_window);
   s_edit_window = NULL;
