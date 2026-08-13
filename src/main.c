@@ -558,14 +558,6 @@ static void edit_collect_script(DictionaryIterator *iter) {
 
 //! Update-only pass: refresh names/areas/icons from the fetched list, mark
 //! scripts that no longer exist as missing. Never adds/removes/reorders.
-static void edit_show_status(const char *text, GColor color);
-
-static void metadata_pop_cb(void *data) {
-  if (s_edit_window) {
-    window_stack_pop(true);
-  }
-}
-
 static void metadata_apply(void) {
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
     s_shortcuts[i].missing = 1;
@@ -591,15 +583,15 @@ static void metadata_apply(void) {
       missing++;
     }
   }
+  s_edit_update_mode = false;
   char msg[64];
   if (missing > 0) {
     snprintf(msg, sizeof(msg), "Updated %u, %u missing", updated, missing);
-    edit_show_status(msg, GColorRed);
+    dialog_show_final(false, msg);
   } else {
     snprintf(msg, sizeof(msg), "Updated %u shortcuts", updated);
-    edit_show_status(msg, GColorGreen);
+    dialog_show_final(true, msg);
   }
-  app_timer_register(1500, metadata_pop_cb, NULL);
 }
 
 static void edit_show_status(const char *text, GColor color) {
@@ -708,32 +700,38 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  // Colored banner with the white icon silhouette centered (native metrics:
-  // icon 30x25, CARD_ICON_UPPER_PADDING 4).
+  // Colored banner: icon far left, script name right after it.
   GRect banner = GRect(0, 0, bounds.size.w, banner_h);
   graphics_context_set_fill_color(ctx, s_accent);
   graphics_fill_rect(ctx, banner, 0, GCornerNone);
   GBitmap *icon = gbitmap_create_with_resource(icon_resource(e->icon_idx));
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
   graphics_context_set_fill_color(ctx, GColorWhite);
-  int16_t icon_x = bounds.size.w / 2 - 15;
-  graphics_draw_bitmap_in_rect(ctx, icon, GRect(icon_x, 4, 30, 25));
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 4, 30, 25));
   gbitmap_destroy(icon);
-  if (shortcut_index_for_key(e->key) >= 0) {
-    GBitmap *check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
-    graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_draw_bitmap_in_rect(ctx, check, GRect(bounds.size.w - 26, 8, 20, 20));
-    gbitmap_destroy(check);
-  }
-
-  // Black text: name, area, tags, category, key footer.
-  int16_t w = bounds.size.w - 2 * margin;
   graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
                      fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(margin, banner_h + 4, w, 22),
+                     GRect(margin + 36, 8, bounds.size.w - margin - 42, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  // Pick indicator: half-circle pill on the middle-right edge, like the
+  // native notification action bar - check when picked, X when not.
+  bool picked = shortcut_index_for_key(e->key) >= 0;
+  int16_t pcx = bounds.size.w - 14;
+  int16_t pcy = bounds.size.h / 2;
+  graphics_context_set_fill_color(ctx, s_accent);
+  graphics_fill_circle(ctx, GPoint(pcx, pcy), 18);
+  GBitmap *ind = gbitmap_create_with_resource(picked ? RESOURCE_ID_ICON_CHECK
+                                                     : RESOURCE_ID_ICON_CLOSE);
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_draw_bitmap_in_rect(ctx, ind, GRect(pcx - 9, pcy - 9, 18, 18));
+  gbitmap_destroy(ind);
+
+  // Black text: area, tags, category, key footer.
+  int16_t w = bounds.size.w - 2 * margin;
+  graphics_context_set_text_color(ctx, GColorBlack);
 
   int16_t y = banner_h + 30;
   char row[128];
@@ -858,8 +856,19 @@ static void push_edit_window(void) {
 }
 
 static void push_update_window(void) {
+  // Fullscreen loading indicator (working dialog) while the fetch streams;
+  // metadata_apply() then shows the result and the dialog dismisses back to
+  // the main menu, which redraws with the updated data.
   s_edit_update_mode = true;
-  push_edit_window();
+  s_edit_visible = false;
+  edit_begin_collect(0);
+  dialog_show_working("Updating...");
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
+    dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
+    dict_write_end(iter);
+    app_message_outbox_send();
+  }
 }
 
 static void push_submenu_window(void);
@@ -1121,21 +1130,43 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   }
   if (row <= s_shortcut_count) {
     Shortcut *sc = &s_shortcuts[row - 1];
+    GRect b = layer_get_bounds(cell_layer);
+    bool selected = menu_layer_is_index_selected(s_main_menu, (MenuIndex *)cell_index);
+
+    // Row background: accent when selected, theme otherwise.
+    graphics_context_set_fill_color(ctx, selected ? s_accent : theme_bg());
+    graphics_fill_rect(ctx, b, 0, GCornerNone);
+
+    // Icon: accent when unselected, bright/inverse (white) when selected.
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
-    menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key,
-                         sc->missing ? "Missing in Home Assistant"
-                                     : (sc->area[0] ? sc->area : NULL),
-                         icon);
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
+    graphics_context_set_fill_color(ctx, selected ? GColorWhite : s_accent);
+    graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 24) / 2, 24, 24));
     gbitmap_destroy(icon);
+
+    // Title + subtitle.
+    graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_fg());
+    graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(36, 7, b.size.w - 42, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     if (sc->missing) {
-      // Red exclamation: the script no longer exists in HA.
-      GRect b = layer_get_bounds(cell_layer);
+      graphics_context_set_text_color(ctx, selected ? GColorDarkGray : GColorRed);
+      graphics_draw_text(ctx, "Missing in Home Assistant",
+                         fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                         GRect(36, 27, b.size.w - 60, 18),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       graphics_context_set_fill_color(ctx, GColorRed);
       graphics_fill_circle(ctx, GPoint(b.size.w - 16, 16), 8);
       graphics_context_set_text_color(ctx, GColorWhite);
       graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                          GRect(b.size.w - 24, 8, 16, 16),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    } else if (sc->area[0]) {
+      graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
+      graphics_draw_text(ctx, sc->area, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                         GRect(36, 27, b.size.w - 42, 18),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     }
   } else {
     menu_cell_basic_draw(ctx, cell_layer, "No shortcuts yet",
