@@ -51,6 +51,21 @@ module.exports = [
     ]
   },
   {
+    'type': 'section',
+    'items': [
+      {
+        'type': 'heading',
+        'defaultValue': 'Appearance'
+      },
+      {
+        'type': 'color',
+        'messageKey': 'AccentColor',
+        'label': 'Accent color',
+        'defaultValue': 198
+      }
+    ]
+  },
+  {
     'type': 'submit',
     'defaultValue': 'Save Settings'
   }

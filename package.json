@@ -39,6 +39,7 @@
       "ResultCode",
       "ResultText",
       "ConfirmEnabled",
+      "AccentColor",
       "BaseUrl",
       "Token",
       "RequestConfig"

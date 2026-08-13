@@ -20,7 +20,10 @@
 #define PERSIST_KEY_CONFIRM 2        // int32: 0/1 confirm-before-execute
 #define PERSIST_KEY_BASEURL 3        // string: Home Assistant base URL
 #define PERSIST_KEY_TOKEN 4          // string: long-lived access token
+#define PERSIST_KEY_ACCENT 5         // int32: GColor8 argb value of the accent color
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
+
+#define DEFAULT_ACCENT_ARGB8 198     // GColorCobaltBlue
 
 #define REQUEST_TIMEOUT_MS 10000     // execute request timeout
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
@@ -151,6 +154,8 @@ static uint16_t s_shortcut_count;
 static bool s_confirm_enabled;
 static char s_base_url[256];
 static char s_token[256];
+static GColor s_accent;
+static uint8_t s_accent_argb;
 
 static int32_t shortcut_index_for_key(const char *key) {
   if (!key || !key[0]) {
@@ -193,9 +198,16 @@ static void persist_load(void) {
 
   persist_read_string(PERSIST_KEY_BASEURL, s_base_url, sizeof(s_base_url));
   persist_read_string(PERSIST_KEY_TOKEN, s_token, sizeof(s_token));
+
+  s_accent_argb = (uint8_t)(persist_read_int(PERSIST_KEY_ACCENT) & 0xFF);
+  if (s_accent_argb == 0) {
+    s_accent_argb = DEFAULT_ACCENT_ARGB8;
+  }
+  s_accent = (GColor){ .argb = s_accent_argb };
 }
 
-static void persist_save_config(const char *base_url, const char *token, bool confirm) {
+static void persist_save_config(const char *base_url, const char *token, bool confirm,
+                                uint8_t accent_argb) {
   if (base_url) {
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
@@ -208,6 +220,11 @@ static void persist_save_config(const char *base_url, const char *token, bool co
   }
   s_confirm_enabled = confirm;
   persist_write_int(PERSIST_KEY_CONFIRM, s_confirm_enabled ? 1 : 0);
+  if (accent_argb != 0) {
+    s_accent_argb = accent_argb;
+    s_accent = (GColor){ .argb = s_accent_argb };
+    persist_write_int(PERSIST_KEY_ACCENT, s_accent_argb);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -545,6 +562,19 @@ static void edit_render(void) {
     return;
   }
   edit_hide_status();
+  // The edit screen contacted HA anyway: refresh the stored shortcut icons so
+  // the main list shows the scripts' current icons.
+  bool changed = false;
+  for (uint16_t i = 0; i < s_script_count; i++) {
+    int32_t idx = shortcut_index_for_key(s_scripts[i].key);
+    if (idx >= 0 && s_scripts[i].icon_idx != s_shortcuts[idx].icon_idx) {
+      s_shortcuts[idx].icon_idx = s_scripts[i].icon_idx;
+      changed = true;
+    }
+  }
+  if (changed) {
+    persist_save();
+  }
   menu_layer_reload_data(s_edit_menu);
 }
 
@@ -603,7 +633,7 @@ static void open_pick_menu(uint16_t row) {
   ActionMenuConfig config = {
     .root_level = level,
     .context = NULL,
-    .colors = { .background = GColorBlack, .foreground = GColorWhite },
+    .colors = { .background = GColorBlack, .foreground = s_accent },
     .will_close = NULL,
     .did_close = action_menu_did_close,
     .align = ActionMenuAlignCenter,
@@ -625,34 +655,67 @@ static uint16_t edit_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
 static void build_edit_subtitle(const ScriptEntry *e, char *out, size_t out_len) {
   out[0] = 0;
   if (e->area[0] && e->labels[0]) {
-    snprintf(out, out_len, "%s \xC2\xB7 %s", e->area, e->labels);
+    snprintf(out, out_len, "Area: %s \xC2\xB7 Tags: %s", e->area, e->labels);
   } else if (e->area[0]) {
-    snprintf(out, out_len, "%s", e->area);
+    snprintf(out, out_len, "Area: %s", e->area);
   } else if (e->labels[0]) {
-    snprintf(out, out_len, "%s", e->labels);
+    snprintf(out, out_len, "Tags: %s", e->labels);
   }
+}
+
+// Full-screen notification-style card per script (one card per screen).
+static int16_t edit_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index,
+                                    void *callback_context) {
+  return layer_get_bounds(menu_layer_get_layer(menu_layer)).size.h;
 }
 
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
-  char subtitle[96];
-  build_edit_subtitle(e, subtitle, sizeof(subtitle));
+  GRect bounds = layer_get_bounds(cell_layer);
+  const int16_t band_h = 48;
 
-  GBitmap *icon = gbitmap_create_with_resource(icon_resource(e->icon_idx));
-  menu_cell_basic_draw(ctx, cell_layer, e->name[0] ? e->name : e->key,
-                       subtitle[0] ? subtitle : NULL, icon);
-  gbitmap_destroy(icon);
+  // Card background (dark).
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, bounds, 0, 0);
 
-  // "✓" marker on entries already picked (masked white on the dark row).
+  // Accent band with the script name; black check marker when picked.
+  GRect band = GRect(0, 0, bounds.size.w, band_h);
+  graphics_context_set_fill_color(ctx, s_accent);
+  graphics_fill_rect(ctx, band, 0, 0);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     GRect(8, (band_h - 26) / 2, bounds.size.w - 44, 26),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   if (shortcut_index_for_key(e->key) >= 0) {
     GBitmap *check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
-    GRect bounds = layer_get_bounds(cell_layer);
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
+    graphics_context_set_fill_color(ctx, GColorBlack);
     graphics_draw_bitmap_in_rect(ctx, check,
-                                 GRect(bounds.size.w - 27, (bounds.size.h - 20) / 2, 20, 20));
+                                 GRect(bounds.size.w - 32, (band_h - 22) / 2, 22, 22));
     gbitmap_destroy(check);
   }
+
+  // Details: area · tags, then the entity key, then the hint.
+  char subtitle[112];
+  build_edit_subtitle(e, subtitle, sizeof(subtitle));
+  graphics_context_set_text_color(ctx, GColorWhite);
+  int16_t y = band_h + 12;
+  if (subtitle[0]) {
+    graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(10, y, bounds.size.w - 20, 28),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    y += 32;
+  }
+  graphics_context_set_text_color(ctx, GColorLightGray);
+  graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(10, y, bounds.size.w - 20, 20),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, shortcut_index_for_key(e->key) >= 0 ? "SELECT: unpick" : "SELECT: pick",
+                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(10, bounds.size.h - 28, bounds.size.w - 20, 20),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 }
 
 static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
@@ -673,14 +736,15 @@ static void edit_window_load(Window *window) {
   menu_layer_set_callbacks(s_edit_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = edit_get_num_sections,
     .get_num_rows = edit_get_num_rows,
+    .get_cell_height = edit_get_cell_height,
     .draw_row = edit_draw_row,
     .select_click = edit_select_cb,
   });
   menu_layer_set_click_config_onto_window(s_edit_menu, window);
   menu_layer_pad_bottom_enable(s_edit_menu, true);
-  // Dark mode, matching the main menu.
+  // Dark mode, matching the main menu; accent highlight.
   menu_layer_set_normal_colors(s_edit_menu, GColorBlack, GColorWhite);
-  menu_layer_set_highlight_colors(s_edit_menu, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(s_edit_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_edit_menu));
 
   s_edit_status = text_layer_create(GRect(8, (bounds.size.h - 60) / 2, bounds.size.w - 16, 60));
@@ -782,6 +846,15 @@ static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   }
 }
 
+static void apply_accent(void) {
+  if (s_main_menu) {
+    menu_layer_set_highlight_colors(s_main_menu, s_accent, GColorBlack);
+  }
+  if (s_edit_menu) {
+    menu_layer_set_highlight_colors(s_edit_menu, s_accent, GColorBlack);
+  }
+}
+
 static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
@@ -797,9 +870,9 @@ static void main_window_load(Window *window) {
   });
   menu_layer_set_click_config_onto_window(s_main_menu, window);
   menu_layer_pad_bottom_enable(s_main_menu, true);
-  // Dark mode: black rows, white text, bright separators; inverse highlight.
+  // Dark mode: black rows, white text, bright separators; accent highlight.
   menu_layer_set_normal_colors(s_main_menu, GColorBlack, GColorWhite);
-  menu_layer_set_highlight_colors(s_main_menu, GColorWhite, GColorBlack);
+  menu_layer_set_highlight_colors(s_main_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_main_menu));
 }
 
@@ -862,10 +935,13 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   if (base_t) {
     Tuple *tok_t = dict_find(iter, MESSAGE_KEY_Token);
     Tuple *conf_t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled);
+    Tuple *acc_t = dict_find(iter, MESSAGE_KEY_AccentColor);
     persist_save_config(
       base_t->value->cstring,
       tok_t ? tok_t->value->cstring : NULL,
-      conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled);
+      conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled,
+      acc_t ? (uint8_t)(acc_t->value->int32 & 0xFF) : 0);
+    apply_accent();
     APP_LOG(APP_LOG_LEVEL_INFO, "Config saved from phone");
     if (s_dialog_active) {
       dialog_show_final(true, "Settings saved");
@@ -882,6 +958,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dict_write_cstring(out, MESSAGE_KEY_BaseUrl, s_base_url);
       dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
       dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
+      dict_write_int32(out, MESSAGE_KEY_AccentColor, s_accent_argb);
       dict_write_end(out);
       app_message_outbox_send();
     }
