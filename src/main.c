@@ -247,7 +247,6 @@ static TextLayer *s_dialog_text;
 static AppTimer *s_timeout_timer;
 static AppTimer *s_dismiss_timer;
 static AppTimer *s_pulse_timer;
-static Animation *s_slide_anim;
 static bool s_dialog_active;
 static bool s_dialog_confirm;
 static char s_dialog_text_buf[128];
@@ -317,15 +316,6 @@ static void pulse_tick_cb(void *data) {
   text_layer_set_text(s_dialog_text, phases[s_pulse_phase]);
 }
 
-static void dialog_slide_in_anim_stopped(Animation *animation, bool finished, void *context) {
-  // Single owner: destroy only if this is still the live slide-in animation
-  // (avoids double-free when dialog_cancel_timers destroys it first).
-  if (s_slide_anim == animation) {
-    s_slide_anim = NULL;
-    animation_destroy(animation);
-  }
-}
-
 static void dialog_cancel_timers(void) {
   if (s_timeout_timer) {
     app_timer_cancel(s_timeout_timer);
@@ -339,26 +329,6 @@ static void dialog_cancel_timers(void) {
     app_timer_cancel(s_pulse_timer);
     s_pulse_timer = NULL;
   }
-  if (s_slide_anim) {
-    Animation *a = s_slide_anim;
-    s_slide_anim = NULL;
-    animation_unschedule(a);
-    animation_destroy(a);
-  }
-}
-
-static void dialog_animate_in(void) {
-  Layer *root = window_get_root_layer(s_dialog_window);
-  GRect bounds = layer_get_bounds(root);
-  GRect from = GRect(0, bounds.size.h, bounds.size.w, bounds.size.h);
-  GRect to = GRect(0, 0, bounds.size.w, bounds.size.h);
-  PropertyAnimation *pa = property_animation_create_layer_frame(s_dialog_bg, &from, &to);
-  s_slide_anim = property_animation_get_animation(pa);
-  animation_set_duration(s_slide_anim, 250);
-  animation_set_curve(s_slide_anim, AnimationCurveEaseOut);
-  animation_set_handlers(s_slide_anim,
-                         (AnimationHandlers){ .stopped = dialog_slide_in_anim_stopped }, NULL);
-  animation_schedule(s_slide_anim);
 }
 
 static void dialog_create(void) {
@@ -389,7 +359,6 @@ static void dialog_create(void) {
 
   s_dialog_active = true;
   window_stack_push(s_dialog_window, false);
-  dialog_animate_in();
 }
 
 //! Orange approval screen: one more SELECT confirms, BACK cancels.
@@ -847,6 +816,215 @@ static void push_edit_window(void) {
   window_stack_push(s_edit_window, true);
 }
 
+static void push_submenu_window(void);
+static void push_reorder_window(void);
+
+// ---------------------------------------------------------------------------
+// Sub-menu (Shortcuts / Change order) + reorder mode
+// ---------------------------------------------------------------------------
+
+static Window *s_sub_window;
+static MenuLayer *s_sub_menu;
+static Window *s_reorder_window;
+static MenuLayer *s_reorder_menu;
+static int32_t s_reorder_held = -1;
+
+static void swap_shortcuts(int32_t a, int32_t b) {
+  if (a < 0 || b < 0 || a >= s_shortcut_count || b >= s_shortcut_count || a == b) {
+    return;
+  }
+  Shortcut tmp = s_shortcuts[a];
+  s_shortcuts[a] = s_shortcuts[b];
+  s_shortcuts[b] = tmp;
+  persist_save();
+}
+
+static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
+                                 void *callback_context) {
+  return 2;
+}
+
+static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
+                         void *callback_context) {
+  if (cell_index->row == 0) {
+    menu_cell_basic_draw(ctx, cell_layer, "Shortcuts",
+                         "Pick scripts from Home Assistant", NULL);
+  } else {
+    menu_cell_basic_draw(ctx, cell_layer, "Change Order",
+                         "Select, move with up/down, select to drop", NULL);
+  }
+}
+
+static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
+  if (cell_index->row == 0) {
+    push_edit_window();
+  } else {
+    push_reorder_window();
+  }
+}
+
+static void sub_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, theme_bg());
+  s_sub_menu = menu_layer_create(bounds);
+  menu_layer_set_callbacks(s_sub_menu, NULL, (MenuLayerCallbacks){
+    .get_num_rows = sub_get_num_rows,
+    .draw_row = sub_draw_row,
+    .select_click = sub_select_cb,
+  });
+  menu_layer_set_click_config_onto_window(s_sub_menu, window);
+  menu_layer_pad_bottom_enable(s_sub_menu, true);
+  menu_layer_set_normal_colors(s_sub_menu, theme_bg(), theme_fg());
+  menu_layer_set_highlight_colors(s_sub_menu, s_accent, GColorBlack);
+  layer_add_child(root, menu_layer_get_layer(s_sub_menu));
+}
+
+static void sub_window_unload(Window *window) {
+  menu_layer_destroy(s_sub_menu);
+  s_sub_menu = NULL;
+  window_destroy(s_sub_window);
+  s_sub_window = NULL;
+}
+
+static void push_submenu_window(void) {
+  s_sub_window = window_create();
+  window_set_window_handlers(s_sub_window, (WindowHandlers){
+    .load = sub_window_load,
+    .unload = sub_window_unload,
+  });
+  window_stack_push(s_sub_window, true);
+}
+
+// ---- reorder mode ----
+
+static uint16_t reorder_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
+                                     void *callback_context) {
+  return s_shortcut_count;
+}
+
+static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
+                             void *callback_context) {
+  if (cell_index->row >= s_shortcut_count) {
+    return;
+  }
+  Shortcut *sc = &s_shortcuts[cell_index->row];
+  char subtitle[64];
+  if (s_reorder_held == (int32_t)cell_index->row) {
+    snprintf(subtitle, sizeof(subtitle), "Moving - up/down shifts, SELECT drops");
+  } else {
+    snprintf(subtitle, sizeof(subtitle), "%d of %d", cell_index->row + 1, s_shortcut_count);
+  }
+  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
+  menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key, subtitle, icon);
+  gbitmap_destroy(icon);
+}
+
+static void reorder_select_click(ClickRecognizerRef rec, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_reorder_menu);
+  int32_t row = idx.row;
+  if (row < 0 || row >= s_shortcut_count) {
+    return;
+  }
+  if (s_reorder_held < 0) {
+    // Grab.
+    s_reorder_held = row;
+    vibes_short_pulse();
+  } else if (row == s_reorder_held) {
+    // Drop.
+    s_reorder_held = -1;
+    vibes_short_pulse();
+  }
+  menu_layer_reload_data(s_reorder_menu);
+}
+
+static void reorder_move(int32_t delta) {
+  if (s_reorder_held < 0) {
+    return;
+  }
+  int32_t target = s_reorder_held + delta;
+  if (target < 0 || target >= s_shortcut_count) {
+    return;
+  }
+  swap_shortcuts(s_reorder_held, target);
+  s_reorder_held = target;
+  MenuIndex idx = { .section = 0, .row = (uint16_t)target };
+  menu_layer_set_selected_index(s_reorder_menu, idx, MenuRowAlignCenter, true);
+  menu_layer_reload_data(s_reorder_menu);
+}
+
+static void reorder_up_click(ClickRecognizerRef rec, void *ctx) {
+  if (s_reorder_held >= 0) {
+    reorder_move(-1);
+    return;
+  }
+  MenuIndex idx = menu_layer_get_selected_index(s_reorder_menu);
+  if (idx.row > 0) {
+    idx.row--;
+    menu_layer_set_selected_index(s_reorder_menu, idx, MenuRowAlignCenter, true);
+  }
+}
+
+static void reorder_down_click(ClickRecognizerRef rec, void *ctx) {
+  if (s_reorder_held >= 0) {
+    reorder_move(1);
+    return;
+  }
+  MenuIndex idx = menu_layer_get_selected_index(s_reorder_menu);
+  if (idx.row + 1 < s_shortcut_count) {
+    idx.row++;
+    menu_layer_set_selected_index(s_reorder_menu, idx, MenuRowAlignCenter, true);
+  }
+}
+
+static void reorder_back_click(ClickRecognizerRef rec, void *ctx) {
+  if (s_reorder_held >= 0) {
+    s_reorder_held = -1;
+    persist_save();
+  }
+  window_stack_pop(true);
+}
+
+static void reorder_click_config_provider(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, reorder_select_click);
+  window_single_click_subscribe(BUTTON_ID_UP, reorder_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, reorder_down_click);
+  window_single_click_subscribe(BUTTON_ID_BACK, reorder_back_click);
+}
+
+static void reorder_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, theme_bg());
+  s_reorder_menu = menu_layer_create(bounds);
+  menu_layer_set_callbacks(s_reorder_menu, NULL, (MenuLayerCallbacks){
+    .get_num_rows = reorder_get_num_rows,
+    .draw_row = reorder_draw_row,
+  });
+  menu_layer_pad_bottom_enable(s_reorder_menu, true);
+  menu_layer_set_normal_colors(s_reorder_menu, theme_bg(), theme_fg());
+  menu_layer_set_highlight_colors(s_reorder_menu, s_accent, GColorBlack);
+  layer_add_child(root, menu_layer_get_layer(s_reorder_menu));
+}
+
+static void reorder_window_unload(Window *window) {
+  menu_layer_destroy(s_reorder_menu);
+  s_reorder_menu = NULL;
+  s_reorder_held = -1;
+  window_destroy(s_reorder_window);
+  s_reorder_window = NULL;
+}
+
+static void push_reorder_window(void) {
+  s_reorder_window = window_create();
+  window_set_window_handlers(s_reorder_window, (WindowHandlers){
+    .load = reorder_window_load,
+    .unload = reorder_window_unload,
+  });
+  window_set_click_config_provider(s_reorder_window, reorder_click_config_provider);
+  window_stack_push(s_reorder_window, true);
+}
+
 // ---------------------------------------------------------------------------
 // Main window
 // ---------------------------------------------------------------------------
@@ -860,18 +1038,39 @@ static uint16_t main_get_num_sections(MenuLayer *menu_layer, void *callback_cont
 
 static uint16_t main_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                   void *callback_context) {
-  // Row 0 = "Edit shortcuts"; then one row per shortcut; a hint row when empty.
+  // Row 0 = narrow entry row (up-arrow -> Shortcuts / Change order sub-menu);
+  // then one row per shortcut; a hint row when empty.
   return 1 + (s_shortcut_count > 0 ? s_shortcut_count : 1);
+}
+
+//! Row 0 is a narrow accent entry row (indicates "more above"); shortcuts
+//! keep a comfortable touch target.
+static int16_t main_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index,
+                                    void *callback_context) {
+  return cell_index->row == 0 ? 30 : 48;
 }
 
 static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   uint16_t row = cell_index->row;
+  GRect bounds = layer_get_bounds(cell_layer);
   if (row == 0) {
-    GBitmap *icon = gbitmap_create_with_resource(icon_resource(ICON_PLUS_IDX));
-    menu_cell_basic_draw(ctx, cell_layer, "Edit shortcuts", NULL, icon);
-    gbitmap_destroy(icon);
-  } else if (row <= s_shortcut_count) {
+    // Accent entry row: up arrow + label, indicating the sub-menu above.
+    graphics_context_set_fill_color(ctx, s_accent);
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+    GBitmap *up = gbitmap_create_with_resource(icon_resource(ICON_ARROW_UP_IDX));
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
+    graphics_context_set_fill_color(ctx, GColorBlack);
+    graphics_draw_bitmap_in_rect(ctx, up, GRect(5, (bounds.size.h - 22) / 2, 22, 22));
+    gbitmap_destroy(up);
+    graphics_context_set_text_color(ctx, GColorBlack);
+    graphics_draw_text(ctx, "Shortcuts \xC2\xB7 Change order",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(32, (bounds.size.h - 22) / 2, bounds.size.w - 36, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    return;
+  }
+  if (row <= s_shortcut_count) {
     Shortcut *sc = &s_shortcuts[row - 1];
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
     menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key,
@@ -879,18 +1078,18 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     gbitmap_destroy(icon);
   } else {
     menu_cell_basic_draw(ctx, cell_layer, "No shortcuts yet",
-                         "Select Edit shortcuts to add", NULL);
+                         "Open Shortcuts to add", NULL);
   }
 }
 
 static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
   uint16_t row = cell_index->row;
   if (row == 0) {
-    push_edit_window();
+    push_submenu_window();
   } else if (row <= s_shortcut_count) {
     execute_shortcut(&s_shortcuts[row - 1]);
   } else {
-    push_edit_window();
+    push_submenu_window();
   }
 }
 
@@ -926,6 +1125,7 @@ static void main_window_load(Window *window) {
   menu_layer_set_callbacks(s_main_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = main_get_num_sections,
     .get_num_rows = main_get_num_rows,
+    .get_cell_height = main_get_cell_height,
     .draw_row = main_draw_row,
     .select_click = main_select_cb,
   });
