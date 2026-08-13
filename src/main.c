@@ -32,6 +32,9 @@
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
 
 #define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
+#define ICON_ROCKET_IDX 91          // index of ICON_ROCKET in the icon table
+#define ICON_ALERT_IDX 61           // index of ICON_ALERT in the icon table
+#define ICON_CHECK_IDX 44           // index of ICON_CHECK in the icon table
 
 // ---------------------------------------------------------------------------
 // Icon table: index == pebble.resources.media order in package.json.
@@ -130,6 +133,7 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_REPEAT,
   RESOURCE_ID_ICON_ARROW_UP,
   RESOURCE_ID_ICON_ARROW_DOWN,
+  RESOURCE_ID_ICON_ROCKET,
 };
 
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
@@ -283,12 +287,14 @@ static ConfirmCtx s_confirm_ctx;
 // ('LAUNCHED') while sending and after success, red ('FAILED') on error.
 typedef enum {
   EXEC_NONE = 0,
-  EXEC_LAUNCHED = 1,
-  EXEC_FAILED = 2,
+  EXEC_LAUNCHING = 1,
+  EXEC_DONE = 2,
+  EXEC_FAILED = 3,
 } ExecState;
 
 static int32_t s_exec_row = -1;
 static ExecState s_exec_state = EXEC_NONE;
+static char s_exec_error[32];
 
 static MenuLayer *s_main_menu;
 
@@ -337,6 +343,7 @@ static void request_timeout_cb(void *data) {
   s_timeout_timer = NULL;
   if (s_exec_row >= 0) {
     s_exec_state = EXEC_FAILED;
+    snprintf(s_exec_error, sizeof(s_exec_error), "Timeout");
     menu_layer_reload_data(s_main_menu);
   }
 }
@@ -463,11 +470,20 @@ static void dialog_unload(Window *window) {
 
 static void start_execute(const char *key);
 
+static void execute_shortcut(const Shortcut *sc) {
+  if (sc->confirm) {
+    dialog_show_confirm(sc);
+  } else {
+    start_execute(sc->key);
+  }
+}
+
 static void start_execute(const char *key) {
   int32_t idx = shortcut_index_for_key(key);
   if (idx >= 0) {
     s_exec_row = 1 + (int32_t)idx;
-    s_exec_state = EXEC_LAUNCHED;
+    s_exec_state = EXEC_LAUNCHING;
+    s_exec_error[0] = '\0';
     menu_layer_reload_data(s_main_menu);
   }
   DictionaryIterator *iter;
@@ -514,6 +530,7 @@ static bool s_edit_visible;
 static void edit_render(void);
 static void metadata_apply(void);
 static bool s_edit_update_mode;
+static void push_shortcut_window(uint16_t idx);
 
 static void edit_begin_collect(int32_t count) {
   s_script_count = 0;
@@ -786,13 +803,14 @@ static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   if (cell_index->row >= s_script_count) {
     return;
   }
-  // Direct pick/unpick toggle - the full-screen info stays visible.
-  if (shortcut_index_for_key(s_scripts[cell_index->row].key) >= 0) {
-    unpick_script(cell_index->row);
+  int32_t idx = shortcut_index_for_key(s_scripts[cell_index->row].key);
+  if (idx >= 0) {
+    // Already picked: choose how this shortcut behaves (OFF / ON / CONFIRM).
+    push_shortcut_window((uint16_t)idx);
   } else {
     pick_script(cell_index->row);
+    menu_layer_reload_data(s_edit_menu);
   }
-  menu_layer_reload_data(s_edit_menu);
 }
 
 // ---- window handlers ----
@@ -1272,15 +1290,34 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
 
-  // Execution feedback row: green 'LAUNCHED' (sending/success), red 'FAILED'.
+  // Execution feedback row: green LAUNCHING (rocket) -> DONE (check), or red
+  // FAILED (alert) with a short error.
   if (row == (uint16_t)s_exec_row) {
-    graphics_context_set_fill_color(ctx, s_exec_state == EXEC_FAILED ? GColorRed : GColorGreen);
+    bool failed = (s_exec_state == EXEC_FAILED);
+    graphics_context_set_fill_color(ctx, failed ? GColorRed : GColorGreen);
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+    uint32_t icon_res = failed ? RESOURCE_ID_ICON_ALERT
+                               : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
+                                                            : RESOURCE_ID_ICON_ROCKET);
+    GBitmap *st = gbitmap_create_with_resource(icon_res);
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_draw_bitmap_in_rect(ctx, st, GRect(10, (bounds.size.h - 22) / 2, 22, 22));
+    gbitmap_destroy(st);
+
+    const char *label = failed ? "FAILED"
+                               : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING");
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, s_exec_state == EXEC_FAILED ? "FAILED" : "LAUNCHED",
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(10, (bounds.size.h - 22) / 2, bounds.size.w - 20, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+    graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(38, (bounds.size.h - 22) / 2, bounds.size.w - 90, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    if (failed) {
+      graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
+                         fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                         GRect(38, (bounds.size.h - 22) / 2 + 22, bounds.size.w - 44, 18),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    }
     return;
   }
 
@@ -1346,7 +1383,7 @@ static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   if (row == 0) {
     push_submenu_window();
   } else if (row <= s_shortcut_count) {
-    push_shortcut_window(row - 1);
+    execute_shortcut(&s_shortcuts[row - 1]);
   } else {
     push_submenu_window();
   }
@@ -1464,7 +1501,12 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *text_t = dict_find(iter, MESSAGE_KEY_ResultText);
     const char *text = text_t ? text_t->value->cstring : "";
     if (s_exec_row >= 0) {
-      s_exec_state = (code == 200) ? EXEC_LAUNCHED : EXEC_FAILED;
+      if (code == 200) {
+        s_exec_state = EXEC_DONE;
+      } else {
+        s_exec_state = EXEC_FAILED;
+        snprintf(s_exec_error, sizeof(s_exec_error), "%s", text[0] ? text : "Error");
+      }
       menu_layer_reload_data(s_main_menu);
     } else if (s_dialog_active) {
       if (code == 200) {
@@ -1554,6 +1596,7 @@ static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason, voi
   APP_LOG(APP_LOG_LEVEL_ERROR, "AppMessage outbox failed");
   if (s_exec_row >= 0) {
     s_exec_state = EXEC_FAILED;
+    snprintf(s_exec_error, sizeof(s_exec_error), "Send failed");
     menu_layer_reload_data(s_main_menu);
   } else if (s_dialog_active) {
     dialog_show_final(false, "Send failed");

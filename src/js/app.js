@@ -136,7 +136,8 @@ var MDI_ICONS = [
   'shuffle',            // 87
   'repeat',             // 88
   'arrow-up',           // 89
-  'arrow-down'          // 90
+  'arrow-down',         // 90
+  'rocket'              // 91
 ];
 
 var MDI_ICON_INDEX = {};
