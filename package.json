@@ -41,7 +41,7 @@
       "ConfirmEnabled",
       "BaseUrl",
       "Token",
-      "ConfigSaved"
+      "RequestConfig"
     ],
     "resources": {
       "media": [

@@ -4,7 +4,9 @@
  * Bridges the watch app to Home Assistant:
  *  - Execute: POST /api/services/script/<key>
  *  - Browse:  POST /api/template (Jinja) to list script entities
- *  - Config:  Clay page, saved phone-side in localStorage('haConfig')
+ *  - Config:  Clay page (documented defaults) — the phone app delivers the
+ *             settings to the WATCH, which persists them in its flash; this
+ *             JS pulls the config back from the watch on 'ready'.
  *
  * All watch-bound results travel over the ResultCode/ResultText keys so the C
  * side can surface every failure in-app.
@@ -20,35 +22,12 @@ var MAX_SHORTCUTS = 64;
 var EXECUTE_TIMEOUT_MS = 10000;
 var BROWSE_TIMEOUT_MS = 20000;
 
-// Runs inside the config page (serialized by Clay into the page HTML). On
-// submit, ALSO write the serialized form values into the webview's
-// localStorage: the Pebble phone app copies that localStorage back into the
-// app JS on every settings-screen close (persistLocalStorage), regardless of
-// whether the JS session is alive. The app JS then recovers the config on
-// 'ready' — so saving settings persists even when the webviewclosed response
-// is dropped. Everything referenced here must exist in the page context.
-var customClay = function (minified) {
-  var clayInstance = this;
-  clayInstance.on(clayInstance.EVENTS.AFTER_BUILD, function () {
-    var form = document.getElementById('main-form');
-    if (!form) return;
-    form.addEventListener('submit', function () {
-      try {
-        // Clay's serialize() wraps each value as {value: ...}; normalize to
-        // plain values, matching the format clay itself uses in getSettings.
-        var raw = clayInstance.serialize();
-        var norm = {};
-        for (var key in raw) {
-          if (raw.hasOwnProperty(key)) {
-            var v = raw[key];
-            norm[key] = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
-          }
-        }
-        localStorage.setItem('clay-settings', JSON.stringify(norm));
-      } catch (err) { /* best effort */ }
-    });
-  });
-};
+// Clay handles showConfiguration/webviewclosed itself (the documented
+// default): on save it normalizes the response ({value: ...} wrapping), writes
+// 'clay-settings' for page prefill, and sends every messageKey value to the
+// WATCH via AppMessage. The watch persists them durably in its flash; this JS
+// pulls the durable copy back on 'ready'. No manual event handling needed.
+var clay = new Clay(clayConfig);
 
 // Monotonic generation counter for browse requests: if the user re-enters the
 // edit window while a previous fetch chain is still streaming, the stale chain
@@ -432,43 +411,11 @@ function payloadValue(payload, keyName) {
  * @param {string} response
  * @return {Object}
  */
-function parseConfigResponse(response) {
-  var text = response;
-  if (typeof text !== 'string') {
-    return {};
-  }
-  // 1) Plain JSON (possibly URL-encoded JSON from Clay).
-  try {
-    if (text.charAt(0) === '{') {
-      return JSON.parse(text);
-    }
-    var decoded = decodeURIComponent(text);
-    if (decoded.charAt(0) === '{') {
-      return JSON.parse(decoded);
-    }
-  } catch (err) { /* fall through to form parsing */ }
-  // 2) URL-encoded form/query string (BaseUrl=...&Token=...&ConfirmEnabled=...).
-  var form = {};
-  var pairs = decodeURIComponent(text).split('&');
-  for (var i = 0; i < pairs.length; i++) {
-    if (!pairs[i]) continue;
-    var kv = pairs[i].split('=');
-    var k = kv[0];
-    var v = kv.length > 1 ? kv[1] : '';
-    form[k] = form[k] !== undefined ? form[k] + ',' + v : v;
-  }
-  if (Object.keys(form).length > 0) {
-    return form;
-  }
-  return {};
-}
-
 /**
- * Recover the config from Clay's persisted settings. The config page writes
- * its serialized values into the webview's localStorage on submit; the Pebble
- * phone app copies that localStorage back into this JS on every settings
- * screen close (even when the JS session is not running). Importing here makes
- * saving deterministic regardless of whether webviewclosed was delivered.
+ * Recover the config from Clay's persisted settings (written by Clay's own
+ * getSettings when a save is delivered, and by this JS when the watch
+ * replies). Acts as a prefill/cache layer; the watch's flash is the source of
+ * truth.
  */
 function importClaySettings() {
   try {
@@ -499,66 +446,40 @@ function importClaySettings() {
 Pebble.addEventListener('ready', function() {
   console.log('JS ready');
   importClaySettings();
-});
-
-Pebble.addEventListener('showConfiguration', function() {
-  console.log('showConfiguration: opening config page');
-  try {
-    // Pre-fill the Clay page with the current phone-side settings.
-    var config = loadConfig();
-    var claySettings = {
-      BaseUrl: config.baseUrl,
-      Token: config.token,
-      ConfirmEnabled: config.confirm ? true : false
-    };
-    localStorage.setItem(CLAY_SETTINGS_KEY, JSON.stringify(claySettings));
-
-    // Instantiate per config-open (event handling is done manually here so the
-    // values are stored under our own key and ConfirmEnabled is forwarded).
-    var clay = new Clay(clayConfig, customClay, { autoHandleEvents: false });
-    Pebble.openURL(clay.generateUrl());
-  } catch (err) {
-    console.log('showConfiguration: failed: ' + err);
-  }
-});
-
-Pebble.addEventListener('webviewclosed', function(e) {
-  if (!e || !e.response) {
-    console.log('webviewclosed: no response, keeping old config');
-    return;
-  }
-  try {
-    var settings = parseConfigResponse(e.response);
-    // The phone app delivers Clay's serialized values, which wrap each value
-    // as {value: ...}; normalize before use (same as Clay's own getSettings).
-    function plain(k) {
-      var v = settings[k];
-      return (v && typeof v === 'object' && 'value' in v) ? v.value : v;
-    }
-    var config = {
-      baseUrl: normalizeBaseUrl(plain('BaseUrl') || plain('baseUrl') || ''),
-      token: plain('Token') || plain('token') || '',
-      confirm: plain('ConfirmEnabled') ? 1 : 0
-    };
-    saveConfig(config);
-    console.log('webviewclosed: config saved');
-
-    // Tell the watch whether to confirm before executing, and confirm the save.
-    var dict = {};
-    dict.ConfirmEnabled = config.confirm;
-    dict.ConfigSaved = 1;
-    Pebble.sendAppMessage(dict, function() {
-      console.log('webviewclosed: sent ConfirmEnabled=' + config.confirm + ' ConfigSaved');
-    }, function(err) {
-      console.log('webviewclosed: failed to send config: ' + JSON.stringify(err));
-    });
-  } catch (err) {
-    console.log('webviewclosed: parse failed, keeping old config: ' + err);
-  }
+  // Pull the durable config from the watch (it persists what Clay sent).
+  var msg = {};
+  msg.RequestConfig = 1;
+  Pebble.sendAppMessage(msg, function() {
+    console.log('ready: requested config from watch');
+  }, function(err) {
+    console.log('ready: config request failed: ' + JSON.stringify(err));
+  });
 });
 
 Pebble.addEventListener('appmessage', function(e) {
   var payload = e.payload || {};
+
+  // Config reply from the watch (its durable copy of what Clay sent it).
+  var baseUrl = payloadValue(payload, 'BaseUrl');
+  var token = payloadValue(payload, 'Token');
+  if (baseUrl !== undefined && baseUrl !== null) {
+    var confirmVal = payloadValue(payload, 'ConfirmEnabled');
+    var cfg = loadConfig();
+    cfg.baseUrl = normalizeBaseUrl(String(baseUrl));
+    cfg.token = (token !== undefined && token !== null) ? String(token) : (cfg.token || '');
+    cfg.confirm = (confirmVal !== undefined && confirmVal !== null) ? (confirmVal ? 1 : 0) : cfg.confirm;
+    saveConfig(cfg);
+    try {
+      localStorage.setItem(CLAY_SETTINGS_KEY, JSON.stringify({
+        BaseUrl: cfg.baseUrl,
+        Token: cfg.token,
+        ConfirmEnabled: cfg.confirm ? true : false
+      }));
+    } catch (err) { /* best effort */ }
+    console.log('appmessage: config from watch saved');
+    return;
+  }
+
   var scriptKey = payloadValue(payload, 'ScriptKey');
 
   if (scriptKey !== undefined && scriptKey !== null && scriptKey !== '') {

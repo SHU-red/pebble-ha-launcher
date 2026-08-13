@@ -18,6 +18,8 @@
 
 #define PERSIST_KEY_COUNT 1          // int32: number of stored shortcuts
 #define PERSIST_KEY_CONFIRM 2        // int32: 0/1 confirm-before-execute
+#define PERSIST_KEY_BASEURL 3        // string: Home Assistant base URL
+#define PERSIST_KEY_TOKEN 4          // string: long-lived access token
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define REQUEST_TIMEOUT_MS 10000     // execute request timeout
@@ -151,6 +153,8 @@ typedef struct {
 static Shortcut s_shortcuts[MAX_SHORTCUTS];
 static uint16_t s_shortcut_count;
 static bool s_confirm_enabled;
+static char s_base_url[256];
+static char s_token[256];
 
 static int32_t shortcut_index_for_key(const char *key) {
   if (!key || !key[0]) {
@@ -190,6 +194,24 @@ static void persist_load(void) {
     }
   }
   s_confirm_enabled = persist_read_int(PERSIST_KEY_CONFIRM) != 0;
+
+  persist_read_string(PERSIST_KEY_BASEURL, s_base_url, sizeof(s_base_url));
+  persist_read_string(PERSIST_KEY_TOKEN, s_token, sizeof(s_token));
+}
+
+static void persist_save_config(const char *base_url, const char *token, bool confirm) {
+  if (base_url) {
+    strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
+    s_base_url[sizeof(s_base_url) - 1] = '\0';
+    persist_write_string(PERSIST_KEY_BASEURL, s_base_url);
+  }
+  if (token) {
+    strncpy(s_token, token, sizeof(s_token) - 1);
+    s_token[sizeof(s_token) - 1] = '\0';
+    persist_write_string(PERSIST_KEY_TOKEN, s_token);
+  }
+  s_confirm_enabled = confirm;
+  persist_write_int(PERSIST_KEY_CONFIRM, s_confirm_enabled ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -838,20 +860,41 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     edit_collect_script(iter);
     return;
   }
-  if ((t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled))) {
-    s_confirm_enabled = t->value->int32 != 0;
-    persist_write_int(PERSIST_KEY_CONFIRM, s_confirm_enabled ? 1 : 0);
-    APP_LOG(APP_LOG_LEVEL_INFO, "ConfirmEnabled set to %d", s_confirm_enabled ? 1 : 0);
-    return;
-  }
-  if ((t = dict_find(iter, MESSAGE_KEY_ConfigSaved))) {
-    // Phone settings were saved: acknowledge visibly so the save is not silent.
+  // Config save from Clay: the phone app delivers every messageKey value to
+  // the watch. Store durably (flash) and acknowledge visibly.
+  Tuple *base_t = dict_find(iter, MESSAGE_KEY_BaseUrl);
+  if (base_t) {
+    Tuple *tok_t = dict_find(iter, MESSAGE_KEY_Token);
+    Tuple *conf_t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled);
+    persist_save_config(
+      base_t->value->cstring,
+      tok_t ? tok_t->value->cstring : NULL,
+      conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled);
+    APP_LOG(APP_LOG_LEVEL_INFO, "Config saved from phone");
     if (s_dialog_active) {
       dialog_show_final(true, "Settings saved");
     } else {
       dialog_create();
       dialog_show_final(true, "Settings saved");
     }
+    return;
+  }
+  // Config request from the JS (on 'ready'): reply with the durable copy.
+  if (dict_find(iter, MESSAGE_KEY_RequestConfig)) {
+    DictionaryIterator *out;
+    if (app_message_outbox_begin(&out) == APP_MSG_OK) {
+      dict_write_cstring(out, MESSAGE_KEY_BaseUrl, s_base_url);
+      dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
+      dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
+      dict_write_end(out);
+      app_message_outbox_send();
+    }
+    return;
+  }
+  if ((t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled))) {
+    s_confirm_enabled = t->value->int32 != 0;
+    persist_write_int(PERSIST_KEY_CONFIRM, s_confirm_enabled ? 1 : 0);
+    APP_LOG(APP_LOG_LEVEL_INFO, "ConfirmEnabled set to %d", s_confirm_enabled ? 1 : 0);
     return;
   }
   APP_LOG(APP_LOG_LEVEL_INFO, "Unrecognized AppMessage payload");
