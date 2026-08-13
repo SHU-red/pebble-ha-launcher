@@ -72,6 +72,12 @@ module.exports = [
           { 'label': 'Light', 'value': 0 }
         ],
         'defaultValue': 1
+      },
+      {
+        'type': 'toggle',
+        'messageKey': 'TouchEnabled',
+        'label': 'Touch',
+        'defaultValue': false
       }
     ]
   },

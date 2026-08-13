@@ -22,6 +22,7 @@
 #define PERSIST_KEY_TOKEN 4          // string: long-lived access token
 #define PERSIST_KEY_ACCENT 5         // int32: GColor8 argb value of the accent color
 #define PERSIST_KEY_DARKMODE 6       // int32: 1 = dark, 0 = light
+#define PERSIST_KEY_TOUCH 7          // int32: 1 = native touch navigation enabled
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define DEFAULT_ACCENT_ARGB8 198     // GColorCobaltBlue
@@ -162,6 +163,7 @@ static char s_token[256];
 static GColor s_accent;
 static uint8_t s_accent_argb;
 static bool s_dark_mode;
+static bool s_touch_enabled;
 
 static int32_t shortcut_index_for_key(const char *key) {
   if (!key || !key[0]) {
@@ -211,10 +213,11 @@ static void persist_load(void) {
   }
   s_accent = (GColor){ .argb = s_accent_argb };
   s_dark_mode = persist_read_int(PERSIST_KEY_DARKMODE) != 0;
+  s_touch_enabled = persist_read_int(PERSIST_KEY_TOUCH) != 0;
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
-                                uint8_t accent_argb, bool dark_mode) {
+                                uint8_t accent_argb, bool dark_mode, bool touch_enabled) {
   if (base_url) {
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
@@ -234,6 +237,8 @@ static void persist_save_config(const char *base_url, const char *token, bool co
   }
   s_dark_mode = dark_mode;
   persist_write_int(PERSIST_KEY_DARKMODE, s_dark_mode ? 1 : 0);
+  s_touch_enabled = touch_enabled;
+  persist_write_int(PERSIST_KEY_TOUCH, s_touch_enabled ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -920,7 +925,7 @@ static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *
   gbitmap_destroy(icon);
 }
 
-static void reorder_select_click(ClickRecognizerRef rec, void *ctx) {
+static void reorder_toggle_hold(void) {
   MenuIndex idx = menu_layer_get_selected_index(s_reorder_menu);
   int32_t row = idx.row;
   if (row < 0 || row >= s_shortcut_count) {
@@ -936,6 +941,10 @@ static void reorder_select_click(ClickRecognizerRef rec, void *ctx) {
     vibes_short_pulse();
   }
   menu_layer_reload_data(s_reorder_menu);
+}
+
+static void reorder_select_click(ClickRecognizerRef rec, void *ctx) {
+  reorder_toggle_hold();
 }
 
 static void reorder_move(int32_t delta) {
@@ -1198,14 +1207,17 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *conf_t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled);
     Tuple *acc_t = dict_find(iter, MESSAGE_KEY_AccentColor);
     Tuple *dark_t = dict_find(iter, MESSAGE_KEY_DarkMode);
+    Tuple *touch_t = dict_find(iter, MESSAGE_KEY_TouchEnabled);
     persist_save_config(
       base_t->value->cstring,
       tok_t ? tok_t->value->cstring : NULL,
       conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled,
       acc_t ? (uint8_t)(acc_t->value->int32 & 0xFF) : 0,
-      dark_t ? dark_t->value->int32 != 0 : s_dark_mode);
+      dark_t ? dark_t->value->int32 != 0 : s_dark_mode,
+      touch_t ? touch_t->value->int32 != 0 : s_touch_enabled);
     apply_accent();
     apply_theme();
+    app_touch_navigation_enable(s_touch_enabled);
     APP_LOG(APP_LOG_LEVEL_INFO, "Config saved from phone");
     if (s_dialog_active) {
       dialog_show_final(true, "Settings saved");
@@ -1224,6 +1236,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
       dict_write_int32(out, MESSAGE_KEY_AccentColor, s_accent_argb);
       dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
+      dict_write_int32(out, MESSAGE_KEY_TouchEnabled, s_touch_enabled ? 1 : 0);
       dict_write_end(out);
       app_message_outbox_send();
     }
@@ -1268,10 +1281,11 @@ static void init(void) {
 
   persist_load();
 
-  // Opt in to touch navigation so the MenuLayers scroll and activate by
-  // swipe/tap on touch hardware; buttons keep working as before. The call is
-  // a no-op macro on non-touch platforms, so no compile-time guard is needed.
-  app_touch_navigation_enable(true);
+  // Native touch navigation (the firmware's own Tier-1 MenuLayer handling),
+  // enabled only when the user turns it on in settings: on firmware 4.33.1
+  // the opt-in currently faults on first touch (PebbleOS issue #1865), so the
+  // default is OFF until that firmware bug is fixed.
+  app_touch_navigation_enable(s_touch_enabled);
 
   push_main_window();
 }
