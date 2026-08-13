@@ -543,6 +543,7 @@ typedef struct {
   char labels[64];
   uint8_t icon_idx;
   char icon_name[40];
+  uint8_t cycle;  // 0 = OFF, 1 = ON, 2 = CONFIRM (transient, from confirm flag)
 } ScriptEntry;
 
 static ScriptEntry s_scripts[MAX_SHORTCUTS];
@@ -559,7 +560,6 @@ static bool s_edit_visible;
 static void edit_render(void);
 static void metadata_apply(void);
 static bool s_edit_update_mode;
-static void push_shortcut_window(uint16_t idx);
 
 static void edit_begin_collect(int32_t count) {
   s_script_count = 0;
@@ -574,6 +574,9 @@ static void edit_commit_pending(void) {
     memset(&s_pending, 0, sizeof(s_pending));
     return;
   }
+  // Picked scripts show ON (approval) or CONFIRM (direct); others OFF.
+  int32_t idx = shortcut_index_for_key(s_pending.key);
+  s_pending.cycle = (idx >= 0) ? (s_shortcuts[idx].confirm ? 1 : 2) : 0;
   s_scripts[s_script_count++] = s_pending;
   memset(&s_pending, 0, sizeof(s_pending));
   s_pending_active = false;
@@ -701,7 +704,7 @@ static void edit_render(void) {
 
 // ---- pick / unpick ----
 
-static void pick_script(uint16_t row) {
+static void pick_script(uint16_t row, uint8_t confirm) {
   ScriptEntry *e = &s_scripts[row];
   if (!e->key[0] || shortcut_index_for_key(e->key) >= 0) {
     return;
@@ -715,6 +718,7 @@ static void pick_script(uint16_t row) {
   snprintf(sc->name, sizeof(sc->name), "%s", e->name[0] ? e->name : e->key);
   snprintf(sc->area, sizeof(sc->area), "%s", e->area);
   sc->icon_idx = e->icon_idx;
+  sc->confirm = confirm;
   s_shortcut_count++;
   persist_save();
   edit_render();
@@ -761,11 +765,14 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   const int16_t banner_h = 36;
   const int16_t margin = 10;
 
-  // White notification body.
-  graphics_context_set_fill_color(ctx, GColorWhite);
+  // Whole row colorized by the OFF/ON/CONFIRM state: grey, green, orange.
+  GColor state_col = (e->cycle == 1) ? GColorGreen
+                     : (e->cycle == 2) ? GColorOrange
+                                       : GColorDarkGray;
+  graphics_context_set_fill_color(ctx, state_col);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  // Colored banner: icon far left, script name right after it.
+  // Accent banner: icon far left, script name right after it.
   GRect banner = GRect(0, 0, bounds.size.w, banner_h);
   graphics_context_set_fill_color(ctx, s_accent);
   graphics_fill_rect(ctx, banner, 0, GCornerNone);
@@ -774,39 +781,41 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 4, 30, 25));
   gbitmap_destroy(icon);
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_text_color(ctx, GColorWhite);
   graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
                      fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                      GRect(margin + 36, 8, bounds.size.w - margin - 42, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
-  // Pick indicator: half-circle pill on the middle-right edge, like the
-  // native notification action bar - check when picked, X when not.
-  bool picked = shortcut_index_for_key(e->key) >= 0;
+  // State text, centered on the select-button height.
+  const char *st = (e->cycle == 1) ? "ON" : (e->cycle == 2) ? "CONFIRM" : "OFF";
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, st, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(margin, bounds.size.h / 2 - 14, bounds.size.w - 2 * margin - 56, 28),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+  // State pill on the right border at the same height, like the native
+  // notification action indicator - the state text instead of an icon.
   int16_t pcx = bounds.size.w - 14;
   int16_t pcy = bounds.size.h / 2;
-  graphics_context_set_fill_color(ctx, s_accent);
-  graphics_fill_circle(ctx, GPoint(pcx, pcy), 18);
-  GBitmap *ind = gbitmap_create_with_resource(picked ? RESOURCE_ID_ICON_CHECK
-                                                     : RESOURCE_ID_ICON_CLOSE);
-  graphics_context_set_compositing_mode(ctx, GCompOpSet);
   graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_draw_bitmap_in_rect(ctx, ind, GRect(pcx - 9, pcy - 9, 18, 18));
-  gbitmap_destroy(ind);
+  graphics_fill_circle(ctx, GPoint(pcx, pcy), 18);
+  graphics_context_set_text_color(ctx, state_col);
+  graphics_draw_text(ctx, st, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(pcx - 17, pcy - 10, 34, 20),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-  // Black text: area, tags, category, key footer.
+  // White info: area above the state, tags/category below, key footer.
   int16_t w = bounds.size.w - 2 * margin;
-  graphics_context_set_text_color(ctx, GColorBlack);
-
-  int16_t y = banner_h + 30;
+  graphics_context_set_text_color(ctx, GColorWhite);
   char row[128];
   if (e->area[0]) {
     snprintf(row, sizeof(row), "Area: %s", e->area);
     graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin, y, w, 22),
+                       GRect(margin, 42, w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    y += 24;
   }
+  int16_t y = bounds.size.h / 2 + 20;
   if (e->labels[0]) {
     snprintf(row, sizeof(row), "Tags: %s", e->labels);
     graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
@@ -822,7 +831,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   }
 
   // Footer: entity key (like the notification timestamp line).
-  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_context_set_text_color(ctx, GColorLightGray);
   graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin, bounds.size.h - 22, w, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -832,14 +841,33 @@ static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   if (cell_index->row >= s_script_count) {
     return;
   }
-  int32_t idx = shortcut_index_for_key(s_scripts[cell_index->row].key);
-  if (idx >= 0) {
-    // Already picked: choose how this shortcut behaves (OFF / ON / CONFIRM).
-    push_shortcut_window((uint16_t)idx);
-  } else {
-    pick_script(cell_index->row);
-    menu_layer_reload_data(s_edit_menu);
+  ScriptEntry *e = &s_scripts[cell_index->row];
+  e->cycle = (uint8_t)((e->cycle + 1) % 3);
+  int32_t idx = shortcut_index_for_key(e->key);
+  switch (e->cycle) {
+    case 0:  // OFF: remove from the launcher
+      if (idx >= 0) {
+        unpick_script(cell_index->row);
+      }
+      break;
+    case 1:  // ON: picked, approval required
+      if (idx >= 0) {
+        s_shortcuts[idx].confirm = 1;
+        persist_save();
+      } else {
+        pick_script(cell_index->row, 1);
+      }
+      break;
+    default: // CONFIRM: picked, runs directly
+      if (idx >= 0) {
+        s_shortcuts[idx].confirm = 0;
+        persist_save();
+      } else {
+        pick_script(cell_index->row, 0);
+      }
+      break;
   }
+  menu_layer_reload_data(s_edit_menu);
 }
 
 // ---- window handlers ----
@@ -1156,126 +1184,6 @@ static void push_reorder_window(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Shortcut window: per-shortcut approval mode (OFF / ON) + execute (CONFIRM)
-// ---------------------------------------------------------------------------
-
-#define SHORTCUT_BAR_H 32
-
-static Window *s_shortcut_window;
-static Layer *s_shortcut_layer;
-static uint16_t s_shortcut_idx;
-static uint8_t s_shortcut_bar;   // 0 = OFF, 1 = ON, 2 = CONFIRM
-
-static void shortcut_layer_update(Layer *layer, GContext *ctx) {
-  GRect b = layer_get_bounds(layer);
-  Shortcut *sc = &s_shortcuts[s_shortcut_idx];
-
-  // White notification-style page.
-  graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_rect(ctx, b, 0, GCornerNone);
-
-  // Accent banner: icon left, name beside it.
-  const int16_t banner_h = 36;
-  graphics_context_set_fill_color(ctx, s_accent);
-  graphics_fill_rect(ctx, GRect(0, 0, b.size.w, banner_h), 0, GCornerNone);
-  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
-  graphics_context_set_compositing_mode(ctx, GCompOpSet);
-  graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_draw_bitmap_in_rect(ctx, icon, GRect(10, 4, 30, 25));
-  gbitmap_destroy(icon);
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
-                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(46, 8, b.size.w - 52, 22),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-
-  // Hint.
-  graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, "SELECT: toggle  BACK: leave (run on CONFIRM)",
-                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(10, b.size.h - SHORTCUT_BAR_H - 26, b.size.w - 20, 18),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-
-  // Bottom bar: OFF | ON | CONFIRM, the active segment accent-filled.
-  static const char *labels[] = { "OFF", "ON", "CONFIRM" };
-  int16_t seg = b.size.w / 3;
-  for (int i = 0; i < 3; i++) {
-    GRect r = GRect(i * seg, b.size.h - SHORTCUT_BAR_H, seg, SHORTCUT_BAR_H);
-    graphics_context_set_fill_color(ctx, i == s_shortcut_bar ? s_accent : GColorLightGray);
-    graphics_fill_rect(ctx, r, 0, GCornerNone);
-    graphics_context_set_text_color(ctx, i == s_shortcut_bar ? GColorBlack : GColorDarkGray);
-    graphics_draw_text(ctx, labels[i], fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(r.origin.x, r.origin.y + (SHORTCUT_BAR_H - 18) / 2, seg, 18),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-  }
-}
-
-static void shortcut_select_click(ClickRecognizerRef rec, void *ctx) {
-  // SELECT just cycles OFF -> ON -> CONFIRM; OFF/ON apply immediately.
-  if (s_shortcut_idx >= s_shortcut_count) {
-    return;
-  }
-  Shortcut *sc = &s_shortcuts[s_shortcut_idx];
-  s_shortcut_bar = (s_shortcut_bar + 1) % 3;
-  if (s_shortcut_bar == 0) {
-    sc->confirm = 0;
-    persist_save();
-  } else if (s_shortcut_bar == 1) {
-    sc->confirm = 1;
-    persist_save();
-  }
-  layer_mark_dirty(s_shortcut_layer);
-}
-
-static void shortcut_back_click(ClickRecognizerRef rec, void *ctx) {
-  if (s_shortcut_idx < s_shortcut_count && s_shortcut_bar == 2) {
-    // CONFIRM: execute now (respecting the per-shortcut approval mode).
-    Shortcut *sc = &s_shortcuts[s_shortcut_idx];
-    window_stack_pop(true);
-    execute_shortcut(sc);
-    return;
-  }
-  window_stack_pop(true);
-}
-
-static void shortcut_click_config_provider(void *ctx) {
-  window_single_click_subscribe(BUTTON_ID_SELECT, shortcut_select_click);
-  window_single_click_subscribe(BUTTON_ID_BACK, shortcut_back_click);
-}
-
-static void shortcut_window_load(Window *window) {
-  Layer *root = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(root);
-  window_set_background_color(window, GColorWhite);
-  s_shortcut_layer = layer_create(bounds);
-  layer_set_update_proc(s_shortcut_layer, shortcut_layer_update);
-  layer_add_child(root, s_shortcut_layer);
-}
-
-static void shortcut_window_unload(Window *window) {
-  layer_destroy(s_shortcut_layer);
-  s_shortcut_layer = NULL;
-  window_destroy(s_shortcut_window);
-  s_shortcut_window = NULL;
-}
-
-static void push_shortcut_window(uint16_t idx) {
-  if (idx >= s_shortcut_count) {
-    return;
-  }
-  s_shortcut_idx = idx;
-  // Default highlight shows the current mode.
-  s_shortcut_bar = s_shortcuts[idx].confirm ? 1 : 0;
-  s_shortcut_window = window_create();
-  window_set_window_handlers(s_shortcut_window, (WindowHandlers){
-    .load = shortcut_window_load,
-    .unload = shortcut_window_unload,
-  });
-  window_set_click_config_provider(s_shortcut_window, shortcut_click_config_provider);
-  window_stack_push(s_shortcut_window, true);
-}
-
-// ---------------------------------------------------------------------------
 // Main window
 // ---------------------------------------------------------------------------
 
@@ -1323,49 +1231,47 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     graphics_context_set_fill_color(ctx, selected ? s_accent : theme_bg());
     graphics_fill_rect(ctx, b, 0, GCornerNone);
 
-    // Icon tint matches the text color (black on the accent selection,
-    // theme foreground otherwise) - not inverted.
-    GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
+    // Execution feedback: the row's own icon/text are replaced by the
+    // state icon (rocket / check / alert) and label (LAUNCHING / DONE /
+    // FAILED + short error) so the row background and accent selection
+    // stay untouched.
+    bool exec = (row == (uint16_t)s_exec_row);
+    bool exec_failed = exec && (s_exec_state == EXEC_FAILED);
+    GColor exec_col = exec ? (exec_failed ? GColorRed : GColorGreen) : GColorClear;
+
+    uint32_t icon_res;
+    if (exec) {
+      icon_res = exec_failed ? RESOURCE_ID_ICON_ALERT
+                             : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
+                                                          : RESOURCE_ID_ICON_ROCKET);
+    } else {
+      icon_res = icon_resource(sc->icon_idx);
+    }
+    GBitmap *icon = gbitmap_create_with_resource(icon_res);
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, selected ? GColorBlack : theme_fg());
+    graphics_context_set_fill_color(ctx, exec ? exec_col : (selected ? GColorBlack : theme_fg()));
     graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 24) / 2, 24, 24));
     gbitmap_destroy(icon);
 
-    // Title (shortened while the exec overlay is shown) + subtitle.
-    int16_t name_w = (row == (uint16_t)s_exec_row) ? (b.size.w - 170) : (b.size.w - 42);
-    graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_fg());
-    graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(36, 7, name_w, 22),
+    const char *title;
+    if (exec) {
+      title = exec_failed ? "FAILED" : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING");
+    } else {
+      title = sc->name[0] ? sc->name : sc->key;
+    }
+    graphics_context_set_text_color(ctx,
+        exec ? exec_col : (selected ? GColorBlack : theme_fg()));
+    graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(36, 7, b.size.w - 42, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    if (row == (uint16_t)s_exec_row) {
-      // Transient state overlay: colored border + state tag (rocket/check/alert).
-      bool failed = (s_exec_state == EXEC_FAILED);
-      GColor c = failed ? GColorRed : GColorGreen;
-      graphics_context_set_stroke_color(ctx, c);
-      graphics_context_set_stroke_width(ctx, 3);
-      graphics_draw_rect(ctx, GRect(1, 1, b.size.w - 2, b.size.h - 2));
-      graphics_context_set_stroke_width(ctx, 1);
 
-      uint32_t icon_res = failed ? RESOURCE_ID_ICON_ALERT
-                                 : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
-                                                              : RESOURCE_ID_ICON_ROCKET);
-      GBitmap *st = gbitmap_create_with_resource(icon_res);
-      graphics_context_set_compositing_mode(ctx, GCompOpSet);
-      graphics_context_set_fill_color(ctx, c);
-      graphics_draw_bitmap_in_rect(ctx, st,
-                                   GRect(b.size.w - 60, (b.size.h - 18) / 2, 18, 18));
-      gbitmap_destroy(st);
-      const char *label = failed ? "FAILED"
-                                 : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING");
-      graphics_context_set_text_color(ctx, c);
-      graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                         GRect(b.size.w - 130, (b.size.h - 18) / 2, 62, 18),
-                         GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
-      if (failed) {
+    if (exec) {
+      // Subtitle: the short error on failure, nothing otherwise.
+      if (exec_failed) {
+        graphics_context_set_text_color(ctx, exec_col);
         graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
                            fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                           GRect(36, 27, b.size.w - 170, 16),
+                           GRect(36, 27, b.size.w - 42, 18),
                            GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       }
     } else if (sc->missing) {
