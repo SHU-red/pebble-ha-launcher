@@ -285,6 +285,8 @@ static ConfirmCtx s_confirm_ctx;
 
 // Row-level execution feedback: the executing shortcut's row turns green
 // ('LAUNCHED') while sending and after success, red ('FAILED') on error.
+static MenuLayer *s_main_menu;
+
 typedef enum {
   EXEC_NONE = 0,
   EXEC_LAUNCHING = 1,
@@ -295,6 +297,31 @@ typedef enum {
 static int32_t s_exec_row = -1;
 static ExecState s_exec_state = EXEC_NONE;
 static char s_exec_error[32];
+static AppTimer *s_exec_revert_timer;
+
+#define EXEC_REVERT_DONE_MS 1200
+#define EXEC_REVERT_FAILED_MS 2200
+
+static void arm_exec_revert(void);
+static void exec_revert_cb(void *data) {
+  s_exec_revert_timer = NULL;
+  s_exec_row = -1;
+  s_exec_state = EXEC_NONE;
+  menu_layer_reload_data(s_main_menu);
+}
+
+static void arm_exec_revert(void) {
+  if (s_exec_revert_timer) { app_timer_cancel(s_exec_revert_timer); s_exec_revert_timer = NULL; }
+  s_exec_revert_timer = app_timer_register(
+      s_exec_state == EXEC_FAILED ? EXEC_REVERT_FAILED_MS : EXEC_REVERT_DONE_MS,
+      exec_revert_cb, NULL);
+}
+
+static void clear_exec_overlay(void) {
+  if (s_exec_revert_timer) { app_timer_cancel(s_exec_revert_timer); s_exec_revert_timer = NULL; }
+  s_exec_row = -1;
+  s_exec_state = EXEC_NONE;
+}
 
 static MenuLayer *s_main_menu;
 
@@ -344,6 +371,7 @@ static void request_timeout_cb(void *data) {
   if (s_exec_row >= 0) {
     s_exec_state = EXEC_FAILED;
     snprintf(s_exec_error, sizeof(s_exec_error), "Timeout");
+    arm_exec_revert();
     menu_layer_reload_data(s_main_menu);
   }
 }
@@ -481,6 +509,7 @@ static void execute_shortcut(const Shortcut *sc) {
 static void start_execute(const char *key) {
   int32_t idx = shortcut_index_for_key(key);
   if (idx >= 0) {
+    clear_exec_overlay();
     s_exec_row = 1 + (int32_t)idx;
     s_exec_state = EXEC_LAUNCHING;
     s_exec_error[0] = '\0';
@@ -1162,7 +1191,7 @@ static void shortcut_layer_update(Layer *layer, GContext *ctx) {
 
   // Hint.
   graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, "UP/DOWN choose, SELECT apply",
+  graphics_draw_text(ctx, "SELECT: toggle  BACK: leave (run on CONFIRM)",
                      fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(10, b.size.h - SHORTCUT_BAR_H - 26, b.size.w - 20, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
@@ -1181,50 +1210,35 @@ static void shortcut_layer_update(Layer *layer, GContext *ctx) {
   }
 }
 
-static void shortcut_up_click(ClickRecognizerRef rec, void *ctx) {
-  s_shortcut_bar = (s_shortcut_bar + 2) % 3;
-  layer_mark_dirty(s_shortcut_layer);
-}
-
-static void shortcut_down_click(ClickRecognizerRef rec, void *ctx) {
-  s_shortcut_bar = (s_shortcut_bar + 1) % 3;
-  layer_mark_dirty(s_shortcut_layer);
-}
-
 static void shortcut_select_click(ClickRecognizerRef rec, void *ctx) {
+  // SELECT just cycles OFF -> ON -> CONFIRM; OFF/ON apply immediately.
   if (s_shortcut_idx >= s_shortcut_count) {
     return;
   }
   Shortcut *sc = &s_shortcuts[s_shortcut_idx];
-  switch (s_shortcut_bar) {
-    case 0:  // OFF: never approve
-      sc->confirm = 0;
-      persist_save();
-      window_stack_pop(true);
-      break;
-    case 1:  // ON: require approval
-      sc->confirm = 1;
-      persist_save();
-      window_stack_pop(true);
-      break;
-    default: // CONFIRM: execute now
-      window_stack_pop(true);
-      if (sc->confirm) {
-        dialog_show_confirm(sc);
-      } else {
-        start_execute(sc->key);
-      }
-      break;
+  s_shortcut_bar = (s_shortcut_bar + 1) % 3;
+  if (s_shortcut_bar == 0) {
+    sc->confirm = 0;
+    persist_save();
+  } else if (s_shortcut_bar == 1) {
+    sc->confirm = 1;
+    persist_save();
   }
+  layer_mark_dirty(s_shortcut_layer);
 }
 
 static void shortcut_back_click(ClickRecognizerRef rec, void *ctx) {
+  if (s_shortcut_idx < s_shortcut_count && s_shortcut_bar == 2) {
+    // CONFIRM: execute now (respecting the per-shortcut approval mode).
+    Shortcut *sc = &s_shortcuts[s_shortcut_idx];
+    window_stack_pop(true);
+    execute_shortcut(sc);
+    return;
+  }
   window_stack_pop(true);
 }
 
 static void shortcut_click_config_provider(void *ctx) {
-  window_single_click_subscribe(BUTTON_ID_UP, shortcut_up_click);
-  window_single_click_subscribe(BUTTON_ID_DOWN, shortcut_down_click);
   window_single_click_subscribe(BUTTON_ID_SELECT, shortcut_select_click);
   window_single_click_subscribe(BUTTON_ID_BACK, shortcut_back_click);
 }
@@ -1290,37 +1304,6 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
 
-  // Execution feedback row: green LAUNCHING (rocket) -> DONE (check), or red
-  // FAILED (alert) with a short error.
-  if (row == (uint16_t)s_exec_row) {
-    bool failed = (s_exec_state == EXEC_FAILED);
-    graphics_context_set_fill_color(ctx, failed ? GColorRed : GColorGreen);
-    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-
-    uint32_t icon_res = failed ? RESOURCE_ID_ICON_ALERT
-                               : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
-                                                            : RESOURCE_ID_ICON_ROCKET);
-    GBitmap *st = gbitmap_create_with_resource(icon_res);
-    graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_draw_bitmap_in_rect(ctx, st, GRect(10, (bounds.size.h - 22) / 2, 22, 22));
-    gbitmap_destroy(st);
-
-    const char *label = failed ? "FAILED"
-                               : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING");
-    graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(38, (bounds.size.h - 22) / 2, bounds.size.w - 90, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    if (failed) {
-      graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
-                         fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                         GRect(38, (bounds.size.h - 22) / 2 + 22, bounds.size.w - 44, 18),
-                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    }
-    return;
-  }
-
   if (row == 0) {
     // Narrow entry row: three horizontal accent dots, centered.
     int16_t cx = bounds.size.w / 2;
@@ -1348,13 +1331,44 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 24) / 2, 24, 24));
     gbitmap_destroy(icon);
 
-    // Title + subtitle.
+    // Title (shortened while the exec overlay is shown) + subtitle.
+    int16_t name_w = (row == (uint16_t)s_exec_row) ? (b.size.w - 170) : (b.size.w - 42);
     graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_fg());
     graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(36, 7, b.size.w - 42, 22),
+                       GRect(36, 7, name_w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    if (sc->missing) {
+    if (row == (uint16_t)s_exec_row) {
+      // Transient state overlay: colored border + state tag (rocket/check/alert).
+      bool failed = (s_exec_state == EXEC_FAILED);
+      GColor c = failed ? GColorRed : GColorGreen;
+      graphics_context_set_stroke_color(ctx, c);
+      graphics_context_set_stroke_width(ctx, 3);
+      graphics_draw_rect(ctx, GRect(1, 1, b.size.w - 2, b.size.h - 2));
+      graphics_context_set_stroke_width(ctx, 1);
+
+      uint32_t icon_res = failed ? RESOURCE_ID_ICON_ALERT
+                                 : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
+                                                              : RESOURCE_ID_ICON_ROCKET);
+      GBitmap *st = gbitmap_create_with_resource(icon_res);
+      graphics_context_set_compositing_mode(ctx, GCompOpSet);
+      graphics_context_set_fill_color(ctx, c);
+      graphics_draw_bitmap_in_rect(ctx, st,
+                                   GRect(b.size.w - 60, (b.size.h - 18) / 2, 18, 18));
+      gbitmap_destroy(st);
+      const char *label = failed ? "FAILED"
+                                 : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING");
+      graphics_context_set_text_color(ctx, c);
+      graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                         GRect(b.size.w - 130, (b.size.h - 18) / 2, 62, 18),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentRight, NULL);
+      if (failed) {
+        graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                           GRect(36, 27, b.size.w - 170, 16),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      }
+    } else if (sc->missing) {
       graphics_context_set_text_color(ctx, selected ? GColorDarkGray : GColorRed);
       graphics_draw_text(ctx, "Missing in Home Assistant",
                          fonts_get_system_font(FONT_KEY_GOTHIC_14),
@@ -1501,12 +1515,14 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *text_t = dict_find(iter, MESSAGE_KEY_ResultText);
     const char *text = text_t ? text_t->value->cstring : "";
     if (s_exec_row >= 0) {
+      if (s_timeout_timer) { app_timer_cancel(s_timeout_timer); s_timeout_timer = NULL; }
       if (code == 200) {
         s_exec_state = EXEC_DONE;
       } else {
         s_exec_state = EXEC_FAILED;
         snprintf(s_exec_error, sizeof(s_exec_error), "%s", text[0] ? text : "Error");
       }
+      arm_exec_revert();
       menu_layer_reload_data(s_main_menu);
     } else if (s_dialog_active) {
       if (code == 200) {
@@ -1595,8 +1611,10 @@ static void outbox_sent(DictionaryIterator *iter, void *context) {
 static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
   APP_LOG(APP_LOG_LEVEL_ERROR, "AppMessage outbox failed");
   if (s_exec_row >= 0) {
+    if (s_timeout_timer) { app_timer_cancel(s_timeout_timer); s_timeout_timer = NULL; }
     s_exec_state = EXEC_FAILED;
     snprintf(s_exec_error, sizeof(s_exec_error), "Send failed");
+    arm_exec_revert();
     menu_layer_reload_data(s_main_menu);
   } else if (s_dialog_active) {
     dialog_show_final(false, "Send failed");
