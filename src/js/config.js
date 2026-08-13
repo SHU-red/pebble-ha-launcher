@@ -62,6 +62,16 @@ module.exports = [
         'messageKey': 'AccentColor',
         'label': 'Accent color',
         'defaultValue': 198
+      },
+      {
+        'type': 'select',
+        'messageKey': 'DarkMode',
+        'label': 'Appearance',
+        'options': [
+          { 'label': 'Dark', 'value': 1 },
+          { 'label': 'Light', 'value': 0 }
+        ],
+        'defaultValue': 1
       }
     ]
   },

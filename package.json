@@ -42,7 +42,8 @@
       "AccentColor",
       "BaseUrl",
       "Token",
-      "RequestConfig"
+      "RequestConfig",
+      "DarkMode"
     ],
     "resources": {
       "media": [

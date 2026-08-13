@@ -21,6 +21,7 @@
 #define PERSIST_KEY_BASEURL 3        // string: Home Assistant base URL
 #define PERSIST_KEY_TOKEN 4          // string: long-lived access token
 #define PERSIST_KEY_ACCENT 5         // int32: GColor8 argb value of the accent color
+#define PERSIST_KEY_DARKMODE 6       // int32: 1 = dark, 0 = light
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define DEFAULT_ACCENT_ARGB8 198     // GColorCobaltBlue
@@ -160,6 +161,7 @@ static char s_base_url[256];
 static char s_token[256];
 static GColor s_accent;
 static uint8_t s_accent_argb;
+static bool s_dark_mode;
 
 static int32_t shortcut_index_for_key(const char *key) {
   if (!key || !key[0]) {
@@ -208,10 +210,11 @@ static void persist_load(void) {
     s_accent_argb = DEFAULT_ACCENT_ARGB8;
   }
   s_accent = (GColor){ .argb = s_accent_argb };
+  s_dark_mode = persist_read_int(PERSIST_KEY_DARKMODE) != 0;
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
-                                uint8_t accent_argb) {
+                                uint8_t accent_argb, bool dark_mode) {
   if (base_url) {
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
@@ -229,6 +232,8 @@ static void persist_save_config(const char *base_url, const char *token, bool co
     s_accent = (GColor){ .argb = s_accent_argb };
     persist_write_int(PERSIST_KEY_ACCENT, s_accent_argb);
   }
+  s_dark_mode = dark_mode;
+  persist_write_int(PERSIST_KEY_DARKMODE, s_dark_mode ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,9 +249,24 @@ static AppTimer *s_dismiss_timer;
 static AppTimer *s_pulse_timer;
 static Animation *s_slide_anim;
 static bool s_dialog_active;
+static bool s_dialog_confirm;
 static char s_dialog_text_buf[128];
 static uint8_t s_pulse_phase;
 static GColor s_dialog_color;
+
+static void start_execute(const char *key);
+
+typedef struct {
+  char key[64];
+  char name[48];
+} ConfirmCtx;
+
+static ConfirmCtx s_confirm_ctx;
+
+static GColor theme_bg(void);
+static GColor theme_fg(void);
+static GColor theme_muted(void);
+static void apply_theme(void);
 
 //! Fill the dialog background with the current color.
 static void dialog_bg_update_proc(Layer *layer, GContext *ctx) {
@@ -256,10 +276,32 @@ static void dialog_bg_update_proc(Layer *layer, GContext *ctx) {
 
 static void dialog_show_final(bool success, const char *text);
 static void dialog_unload(Window *window);
+static void dialog_dismiss_cb(void *data);
+
+static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
+  if (!s_dialog_confirm) return;
+  s_dialog_confirm = false;
+  start_execute(s_confirm_ctx.key);
+}
+
+static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
+  if (!s_dialog_confirm) return;
+  s_dialog_confirm = false;
+  dialog_dismiss_cb(NULL);
+}
+
+static void dialog_click_config_provider(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_SELECT, dialog_confirm_select);
+  window_single_click_subscribe(BUTTON_ID_BACK, dialog_confirm_cancel);
+}
 
 static void dialog_dismiss_cb(void *data) {
   s_dismiss_timer = NULL;
-  window_stack_pop_all(true);
+  // Pop only the dialog: the app stays alive (exiting mid-AppMessage-stream
+  // crashed on use-after-free of windows/animation objects).
+  if (s_dialog_window) {
+    window_stack_remove(s_dialog_window, true);
+  }
 }
 
 static void request_timeout_cb(void *data) {
@@ -276,8 +318,12 @@ static void pulse_tick_cb(void *data) {
 }
 
 static void dialog_slide_in_anim_stopped(Animation *animation, bool finished, void *context) {
-  s_slide_anim = NULL;
-  animation_destroy(animation);
+  // Single owner: destroy only if this is still the live slide-in animation
+  // (avoids double-free when dialog_cancel_timers destroys it first).
+  if (s_slide_anim == animation) {
+    s_slide_anim = NULL;
+    animation_destroy(animation);
+  }
 }
 
 static void dialog_cancel_timers(void) {
@@ -294,9 +340,10 @@ static void dialog_cancel_timers(void) {
     s_pulse_timer = NULL;
   }
   if (s_slide_anim) {
-    animation_unschedule(s_slide_anim);
-    animation_destroy(s_slide_anim);
+    Animation *a = s_slide_anim;
     s_slide_anim = NULL;
+    animation_unschedule(a);
+    animation_destroy(a);
   }
 }
 
@@ -315,10 +362,14 @@ static void dialog_animate_in(void) {
 }
 
 static void dialog_create(void) {
+  if (s_dialog_active) {
+    return;
+  }
   s_dialog_window = window_create();
   window_set_window_handlers(s_dialog_window, (WindowHandlers){
     .unload = dialog_unload,
   });
+  window_set_click_config_provider(s_dialog_window, dialog_click_config_provider);
 
   Layer *root = window_get_root_layer(s_dialog_window);
   GRect bounds = layer_get_bounds(root);
@@ -328,7 +379,7 @@ static void dialog_create(void) {
   s_dialog_color = GColorGreen;
   layer_add_child(root, s_dialog_bg);
 
-  s_dialog_text = text_layer_create(GRect(8, (bounds.size.h - 60) / 2, bounds.size.w - 16, 60));
+  s_dialog_text = text_layer_create(GRect(8, (bounds.size.h - 100) / 2, bounds.size.w - 16, 100));
   text_layer_set_font(s_dialog_text, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_dialog_text, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_dialog_text, GTextOverflowModeWordWrap);
@@ -341,12 +392,32 @@ static void dialog_create(void) {
   dialog_animate_in();
 }
 
+//! Orange approval screen: one more SELECT confirms, BACK cancels.
+static void dialog_show_confirm(const Shortcut *sc) {
+  if (!s_dialog_active) {
+    dialog_create();
+  }
+  dialog_cancel_timers();
+  s_dialog_confirm = true;
+  s_dialog_color = GColorOrange;
+  layer_mark_dirty(s_dialog_bg);
+  text_layer_set_text_color(s_dialog_text, GColorWhite);
+  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%s",
+           sc->name[0] ? sc->name : sc->key);
+  snprintf(s_confirm_ctx.key, sizeof(s_confirm_ctx.key), "%s", sc->key);
+  snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf),
+           "Run %s?\n\nSELECT: confirm\nBACK: cancel", s_confirm_ctx.name);
+  text_layer_set_text(s_dialog_text, s_dialog_text_buf);
+  vibes_short_pulse();
+}
+
 //! Green working dialog (auto_dismiss = false, animated ellipsis).
 static void dialog_show_working(const char *text) {
   if (!s_dialog_active) {
     dialog_create();
   }
   dialog_cancel_timers();
+  s_dialog_confirm = false;
   s_dialog_color = GColorGreen;
   layer_mark_dirty(s_dialog_bg);
   text_layer_set_text_color(s_dialog_text, GColorWhite);
@@ -361,6 +432,7 @@ static void dialog_show_final(bool success, const char *text) {
     return;
   }
   dialog_cancel_timers();
+  s_dialog_confirm = false;
   s_dialog_color = success ? GColorGreen : GColorRed;
   layer_mark_dirty(s_dialog_bg);
   text_layer_set_text_color(s_dialog_text, GColorWhite);
@@ -389,55 +461,12 @@ static void dialog_unload(Window *window) {
 
 static void start_execute(const char *key);
 
-typedef struct {
-  char key[64];
-  char name[48];
-} ConfirmCtx;
-
-static ConfirmCtx s_confirm_ctx;
-
 static void action_menu_did_close(ActionMenu *menu, const ActionMenuItem *performed_action,
                                   void *context) {
   ActionMenuLevel *root = action_menu_get_root_level(menu);
   if (root) {
     action_menu_hierarchy_destroy(root, NULL, NULL);
   }
-}
-
-static void confirm_run_cb(ActionMenu *menu, const ActionMenuItem *action, void *context) {
-  ConfirmCtx *c = (ConfirmCtx *)action_menu_item_get_action_data(action);
-  if (c) {
-    start_execute(c->key);
-  }
-  action_menu_close(menu, true);
-}
-
-static void confirm_cancel_cb(ActionMenu *menu, const ActionMenuItem *action, void *context) {
-  action_menu_close(menu, true);
-}
-
-//! Confirm-before-run ActionMenu: root item shows the script name (crumb),
-//! child level offers Run / Cancel. On touch hardware taps activate items.
-static void open_confirm_menu(const Shortcut *sc) {
-  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%s",
-           sc->name[0] ? sc->name : sc->key);
-  snprintf(s_confirm_ctx.key, sizeof(s_confirm_ctx.key), "%s", sc->key);
-
-  ActionMenuLevel *root = action_menu_level_create(1);
-  ActionMenuLevel *actions = action_menu_level_create(2);
-  action_menu_level_add_action(actions, "Run", confirm_run_cb, &s_confirm_ctx);
-  action_menu_level_add_action(actions, "Cancel", confirm_cancel_cb, NULL);
-  action_menu_level_add_child(root, actions, s_confirm_ctx.name);
-
-  ActionMenuConfig config = {
-    .root_level = root,
-    .context = NULL,
-    .colors = { .background = GColorBlack, .foreground = GColorWhite },
-    .will_close = NULL,
-    .did_close = action_menu_did_close,
-    .align = ActionMenuAlignCenter,
-  };
-  action_menu_open(&config);
 }
 
 static void start_execute(const char *key) {
@@ -458,7 +487,8 @@ static void start_execute(const char *key) {
 
 static void execute_shortcut(const Shortcut *sc) {
   if (s_confirm_enabled) {
-    open_confirm_menu(sc);
+    // One more SELECT on the orange approval screen; BACK cancels.
+    dialog_show_confirm(sc);
   } else {
     start_execute(sc->key);
   }
@@ -680,8 +710,8 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   GRect bounds = layer_get_bounds(cell_layer);
   const int16_t band_h = 48;
 
-  // Card background (dark).
-  graphics_context_set_fill_color(ctx, GColorBlack);
+  // Card background (theme).
+  graphics_context_set_fill_color(ctx, theme_bg());
   graphics_fill_rect(ctx, bounds, 0, 0);
 
   // Accent band with the script name; black check marker when picked.
@@ -702,10 +732,10 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     gbitmap_destroy(check);
   }
 
-  // Details: area · tags, then the entity key, then the hint.
+  // Details: area · tags, then the entity key.
   char subtitle[112];
   build_edit_subtitle(e, subtitle, sizeof(subtitle));
-  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_context_set_text_color(ctx, theme_fg());
   int16_t y = band_h + 12;
   if (subtitle[0]) {
     graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_18),
@@ -713,7 +743,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     y += 32;
   }
-  graphics_context_set_text_color(ctx, GColorLightGray);
+  graphics_context_set_text_color(ctx, theme_muted());
   graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(10, y, bounds.size.w - 20, 20),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -731,7 +761,7 @@ static void edit_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
-  window_set_background_color(window, GColorBlack);
+  window_set_background_color(window, theme_bg());
 
   // Native right-edge action bar (like PebbleOS notifications): up/down
   // navigation and the select (pick/unpick) affordance. Touch taps on the bar
@@ -758,8 +788,8 @@ static void edit_window_load(Window *window) {
   });
   menu_layer_set_click_config_onto_window(s_edit_menu, window);
   menu_layer_pad_bottom_enable(s_edit_menu, true);
-  // Dark mode, matching the main menu; accent highlight.
-  menu_layer_set_normal_colors(s_edit_menu, GColorBlack, GColorWhite);
+  // Theme + accent highlight.
+  menu_layer_set_normal_colors(s_edit_menu, theme_bg(), theme_fg());
   menu_layer_set_highlight_colors(s_edit_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_edit_menu));
 
@@ -768,7 +798,7 @@ static void edit_window_load(Window *window) {
   text_layer_set_text_alignment(s_edit_status, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_edit_status, GTextOverflowModeWordWrap);
   text_layer_set_background_color(s_edit_status, GColorClear);
-  text_layer_set_text_color(s_edit_status, GColorWhite);
+  text_layer_set_text_color(s_edit_status, theme_fg());
   layer_add_child(root, text_layer_get_layer(s_edit_status));
 }
 
@@ -873,11 +903,24 @@ static void apply_accent(void) {
   }
 }
 
+static GColor theme_bg(void) { return s_dark_mode ? GColorBlack : GColorWhite; }
+static GColor theme_fg(void) { return s_dark_mode ? GColorWhite : GColorBlack; }
+static GColor theme_muted(void) { return s_dark_mode ? GColorLightGray : GColorDarkGray; }
+
+static void apply_theme(void) {
+  if (s_main_menu) {
+    menu_layer_set_normal_colors(s_main_menu, theme_bg(), theme_fg());
+  }
+  if (s_edit_menu) {
+    menu_layer_set_normal_colors(s_edit_menu, theme_bg(), theme_fg());
+  }
+}
+
 static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
-  window_set_background_color(window, GColorBlack);
+  window_set_background_color(window, theme_bg());
 
   s_main_menu = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_main_menu, NULL, (MenuLayerCallbacks){
@@ -888,8 +931,8 @@ static void main_window_load(Window *window) {
   });
   menu_layer_set_click_config_onto_window(s_main_menu, window);
   menu_layer_pad_bottom_enable(s_main_menu, true);
-  // Dark mode: black rows, white text, bright separators; accent highlight.
-  menu_layer_set_normal_colors(s_main_menu, GColorBlack, GColorWhite);
+  // Dark/light rows with accent highlight.
+  menu_layer_set_normal_colors(s_main_menu, theme_bg(), theme_fg());
   menu_layer_set_highlight_colors(s_main_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_main_menu));
 }
@@ -954,12 +997,15 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *tok_t = dict_find(iter, MESSAGE_KEY_Token);
     Tuple *conf_t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled);
     Tuple *acc_t = dict_find(iter, MESSAGE_KEY_AccentColor);
+    Tuple *dark_t = dict_find(iter, MESSAGE_KEY_DarkMode);
     persist_save_config(
       base_t->value->cstring,
       tok_t ? tok_t->value->cstring : NULL,
       conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled,
-      acc_t ? (uint8_t)(acc_t->value->int32 & 0xFF) : 0);
+      acc_t ? (uint8_t)(acc_t->value->int32 & 0xFF) : 0,
+      dark_t ? dark_t->value->int32 != 0 : s_dark_mode);
     apply_accent();
+    apply_theme();
     APP_LOG(APP_LOG_LEVEL_INFO, "Config saved from phone");
     if (s_dialog_active) {
       dialog_show_final(true, "Settings saved");
@@ -977,6 +1023,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
       dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
       dict_write_int32(out, MESSAGE_KEY_AccentColor, s_accent_argb);
+      dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
       dict_write_end(out);
       app_message_outbox_send();
     }
