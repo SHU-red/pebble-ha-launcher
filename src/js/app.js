@@ -529,10 +529,16 @@ Pebble.addEventListener('webviewclosed', function(e) {
   }
   try {
     var settings = parseConfigResponse(e.response);
+    // The phone app delivers Clay's serialized values, which wrap each value
+    // as {value: ...}; normalize before use (same as Clay's own getSettings).
+    function plain(k) {
+      var v = settings[k];
+      return (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+    }
     var config = {
-      baseUrl: normalizeBaseUrl(settings.BaseUrl || settings.baseUrl || ''),
-      token: settings.Token || settings.token || '',
-      confirm: settings.ConfirmEnabled ? 1 : 0
+      baseUrl: normalizeBaseUrl(plain('BaseUrl') || plain('baseUrl') || ''),
+      token: plain('Token') || plain('token') || '',
+      confirm: plain('ConfirmEnabled') ? 1 : 0
     };
     saveConfig(config);
     console.log('webviewclosed: config saved');
