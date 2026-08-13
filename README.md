@@ -16,8 +16,11 @@ A modern, touch-first Home Assistant script launcher for Pebble.
    "Settings saved" and stores the config durably in its own flash — the
    phone's storage is only a prefill cache. The app pulls the config back from
    the watch on every start.
-3. On the watch: open the app, select "Edit shortcuts" (top entry), pick the
-   scripts you want, then run them from the main list.
+3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
+   script row shows its state — grey `OFF` (not in the launcher), green `ON`
+   (runs with a confirmation prompt), orange `CONFIRM` (runs directly).
+   Press Select to cycle the state; then run the picked scripts from the
+   main list.
 
 ## Build
 
