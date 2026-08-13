@@ -337,7 +337,8 @@ function handleBrowseResponse(responseText, generation) {
       name: name,
       area: parts[2],
       labels: parts[3],
-      icon: mdiToIndex(parts[4])
+      icon: mdiToIndex(parts[4]),
+      iconName: parts[4] || ''
     });
     if (scripts.length >= MAX_SHORTCUTS) {
       break;
@@ -386,6 +387,7 @@ function sendScriptEntry(scripts, index, generation) {
   dict.ScriptArea = script.area;
   dict.ScriptLabels = script.labels;
   dict.ScriptIcon = script.icon;
+  dict.ScriptIconName = script.iconName || '';
   Pebble.sendAppMessage(dict, function() {
     sendScriptEntry(scripts, index + 1, generation);
   }, function(err) {

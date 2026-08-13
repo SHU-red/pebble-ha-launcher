@@ -35,6 +35,7 @@
       "ScriptArea",
       "ScriptLabels",
       "ScriptIcon",
+      "ScriptIconName",
       "FetchScripts",
       "ResultCode",
       "ResultText",

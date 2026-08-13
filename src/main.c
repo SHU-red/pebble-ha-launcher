@@ -478,6 +478,7 @@ typedef struct {
   char area[32];
   char labels[64];
   uint8_t icon_idx;
+  char icon_name[40];
 } ScriptEntry;
 
 static ScriptEntry s_scripts[MAX_SHORTCUTS];
@@ -536,6 +537,9 @@ static void edit_collect_script(DictionaryIterator *iter) {
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ScriptIcon))) {
     s_pending.icon_idx = (uint8_t)t->value->int32;
+  }
+  if ((t = dict_find(iter, MESSAGE_KEY_ScriptIconName))) {
+    snprintf(s_pending.icon_name, sizeof(s_pending.icon_name), "%s", t->value->cstring);
   }
   if (!s_pending_active || s_script_expected == 0) {
     return;
@@ -661,65 +665,81 @@ static uint16_t edit_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
   return s_script_count;
 }
 
-static void build_edit_subtitle(const ScriptEntry *e, char *out, size_t out_len) {
-  out[0] = 0;
-  if (e->area[0] && e->labels[0]) {
-    snprintf(out, out_len, "Area: %s \xC2\xB7 Tags: %s", e->area, e->labels);
-  } else if (e->area[0]) {
-    snprintf(out, out_len, "Area: %s", e->area);
-  } else if (e->labels[0]) {
-    snprintf(out, out_len, "Tags: %s", e->labels);
-  }
-}
-
 // Full-screen notification-style card per script (one card per screen).
 static int16_t edit_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index,
                                     void *callback_context) {
   return layer_get_bounds(menu_layer_get_layer(menu_layer)).size.h;
 }
 
+//! Full-screen picker card in the style of the native Pebble notification
+//! page: white body, colored top banner (36px) with the script icon centered
+//! in it, black text below. Data from HA: name, area, tags/labels, category
+//! (the script's mdi icon name) and the entity key as the footer.
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
   GRect bounds = layer_get_bounds(cell_layer);
-  const int16_t band_h = 48;
+  const int16_t banner_h = 36;
+  const int16_t margin = 10;
 
-  // Card background (theme).
-  graphics_context_set_fill_color(ctx, theme_bg());
-  graphics_fill_rect(ctx, bounds, 0, 0);
+  // White notification body.
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  // Accent band with the script name; black check marker when picked.
-  GRect band = GRect(0, 0, bounds.size.w, band_h);
+  // Colored banner with the white icon silhouette centered (native metrics:
+  // icon 30x25, CARD_ICON_UPPER_PADDING 4).
+  GRect banner = GRect(0, 0, bounds.size.w, banner_h);
   graphics_context_set_fill_color(ctx, s_accent);
-  graphics_fill_rect(ctx, band, 0, 0);
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
-                     fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                     GRect(8, (band_h - 26) / 2, bounds.size.w - 44, 26),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_fill_rect(ctx, banner, 0, GCornerNone);
+  GBitmap *icon = gbitmap_create_with_resource(icon_resource(e->icon_idx));
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  int16_t icon_x = bounds.size.w / 2 - 15;
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(icon_x, 4, 30, 25));
+  gbitmap_destroy(icon);
   if (shortcut_index_for_key(e->key) >= 0) {
     GBitmap *check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_draw_bitmap_in_rect(ctx, check,
-                                 GRect(bounds.size.w - 32, (band_h - 22) / 2, 22, 22));
+    graphics_context_set_fill_color(ctx, GColorWhite);
+    graphics_draw_bitmap_in_rect(ctx, check, GRect(bounds.size.w - 30, 7, 22, 22));
     gbitmap_destroy(check);
   }
 
-  // Details: area · tags, then the entity key.
-  char subtitle[112];
-  build_edit_subtitle(e, subtitle, sizeof(subtitle));
-  graphics_context_set_text_color(ctx, theme_fg());
-  int16_t y = band_h + 12;
-  if (subtitle[0]) {
-    graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(10, y, bounds.size.w - 20, 28),
+  // Black text: name, area, tags, category, key footer.
+  int16_t w = bounds.size.w - 2 * margin;
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(margin, banner_h + 4, w, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  int16_t y = banner_h + 30;
+  char row[128];
+  if (e->area[0]) {
+    snprintf(row, sizeof(row), "Area: %s", e->area);
+    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(margin, y, w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    y += 32;
+    y += 24;
   }
-  graphics_context_set_text_color(ctx, theme_muted());
+  if (e->labels[0]) {
+    snprintf(row, sizeof(row), "Tags: %s", e->labels);
+    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(margin, y, w, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    y += 24;
+  }
+  if (e->icon_name[0]) {
+    snprintf(row, sizeof(row), "Category: %s", e->icon_name);
+    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(margin, y, w, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
+
+  // Footer: entity key (like the notification timestamp line).
+  graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(10, y, bounds.size.w - 20, 20),
+                     GRect(margin, bounds.size.h - 22, w, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
@@ -735,7 +755,8 @@ static void edit_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
-  window_set_background_color(window, theme_bg());
+  // Notification-style picker: white page regardless of the app theme.
+  window_set_background_color(window, GColorWhite);
 
   // Native right-edge action bar (like PebbleOS notifications): up/down
   // navigation and the select (pick/unpick) affordance. Touch taps on the bar
@@ -772,7 +793,7 @@ static void edit_window_load(Window *window) {
   text_layer_set_text_alignment(s_edit_status, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_edit_status, GTextOverflowModeWordWrap);
   text_layer_set_background_color(s_edit_status, GColorClear);
-  text_layer_set_text_color(s_edit_status, theme_fg());
+  text_layer_set_text_color(s_edit_status, GColorBlack);
   layer_add_child(root, text_layer_get_layer(s_edit_status));
 }
 
@@ -846,7 +867,7 @@ static void swap_shortcuts(int32_t a, int32_t b) {
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 2;
+  return 3;
 }
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
@@ -854,17 +875,27 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   if (cell_index->row == 0) {
     menu_cell_basic_draw(ctx, cell_layer, "Shortcuts",
                          "Pick scripts from Home Assistant", NULL);
-  } else {
+  } else if (cell_index->row == 1) {
     menu_cell_basic_draw(ctx, cell_layer, "Change Order",
                          "Select, move with up/down, select to drop", NULL);
+  } else {
+    // Bottom entry: three vertical accent dots - back to the shortcuts.
+    GRect bounds = layer_get_bounds(cell_layer);
+    int16_t cy = bounds.size.h / 2;
+    graphics_context_set_fill_color(ctx, s_accent);
+    for (int i = -1; i <= 1; i++) {
+      graphics_fill_circle(ctx, GPoint(14, cy + i * 6), 2);
+    }
   }
 }
 
 static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
   if (cell_index->row == 0) {
     push_edit_window();
-  } else {
+  } else if (cell_index->row == 1) {
     push_reorder_window();
+  } else {
+    window_stack_pop(true);
   }
 }
 
@@ -1064,19 +1095,12 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
   if (row == 0) {
-    // Accent entry row: up arrow + label, indicating the sub-menu above.
+    // Narrow entry row: three vertical accent dots (the menu affordance).
+    int16_t cy = bounds.size.h / 2;
     graphics_context_set_fill_color(ctx, s_accent);
-    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
-    GBitmap *up = gbitmap_create_with_resource(icon_resource(ICON_ARROW_UP_IDX));
-    graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    graphics_draw_bitmap_in_rect(ctx, up, GRect(5, (bounds.size.h - 22) / 2, 22, 22));
-    gbitmap_destroy(up);
-    graphics_context_set_text_color(ctx, GColorBlack);
-    graphics_draw_text(ctx, "Shortcuts \xC2\xB7 Change order",
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(32, (bounds.size.h - 22) / 2, bounds.size.w - 36, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    for (int i = -1; i <= 1; i++) {
+      graphics_fill_circle(ctx, GPoint(14, cy + i * 6), 2);
+    }
     return;
   }
   if (row <= s_shortcut_count) {
@@ -1124,6 +1148,41 @@ static void apply_theme(void) {
   }
 }
 
+// Custom click handling so UP on the first shortcut opens the sub-menu and
+// the selection starts on the first shortcut (not the dots row).
+static uint16_t main_total_rows(void) {
+  return 1 + (s_shortcut_count > 0 ? s_shortcut_count : 1);
+}
+
+static void main_up_click(ClickRecognizerRef rec, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
+  if (idx.row <= 1) {
+    push_submenu_window();  // push upwards on the first entry
+    return;
+  }
+  idx.row--;
+  menu_layer_set_selected_index(s_main_menu, idx, MenuRowAlignCenter, true);
+}
+
+static void main_down_click(ClickRecognizerRef rec, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
+  if (idx.row + 1 < main_total_rows()) {
+    idx.row++;
+    menu_layer_set_selected_index(s_main_menu, idx, MenuRowAlignCenter, true);
+  }
+}
+
+static void main_select_click(ClickRecognizerRef rec, void *ctx) {
+  MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
+  main_select_cb(s_main_menu, &idx, NULL);
+}
+
+static void main_click_config_provider(void *ctx) {
+  window_single_click_subscribe(BUTTON_ID_UP, main_up_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, main_down_click);
+  window_single_click_subscribe(BUTTON_ID_SELECT, main_select_click);
+}
+
 static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
@@ -1138,12 +1197,15 @@ static void main_window_load(Window *window) {
     .draw_row = main_draw_row,
     .select_click = main_select_cb,
   });
-  menu_layer_set_click_config_onto_window(s_main_menu, window);
+  window_set_click_config_provider(window, main_click_config_provider);
   menu_layer_pad_bottom_enable(s_main_menu, true);
   // Dark/light rows with accent highlight.
   menu_layer_set_normal_colors(s_main_menu, theme_bg(), theme_fg());
   menu_layer_set_highlight_colors(s_main_menu, s_accent, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_main_menu));
+  // Always start on the first shortcut.
+  MenuIndex first = { .section = 0, .row = 1 };
+  menu_layer_set_selected_index(s_main_menu, first, MenuRowAlignCenter, true);
 }
 
 static void main_window_unload(Window *window) {
