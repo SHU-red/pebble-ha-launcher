@@ -77,6 +77,7 @@ module.exports = [
         'type': 'toggle',
         'messageKey': 'TouchEnabled',
         'label': 'Touch',
+        'description': 'Off while the native touch layer has bugs (PebbleOS #1865).\nTurn on once the watch firmware update ships.',
         'defaultValue': false
       }
     ]
