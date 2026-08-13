@@ -26,10 +26,6 @@
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
 
-#define HEADER_HEIGHT 16
-#define SECTION_ACTIONS 0
-#define SECTION_SHORTCUTS 1
-
 #define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
 
 // ---------------------------------------------------------------------------
@@ -648,10 +644,11 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                        subtitle[0] ? subtitle : NULL, icon);
   gbitmap_destroy(icon);
 
-  // "✓" marker on entries already picked.
+  // "✓" marker on entries already picked (masked white on the dark row).
   if (shortcut_index_for_key(e->key) >= 0) {
     GBitmap *check = gbitmap_create_with_resource(RESOURCE_ID_ICON_CHECK);
     GRect bounds = layer_get_bounds(cell_layer);
+    graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_draw_bitmap_in_rect(ctx, check,
                                  GRect(bounds.size.w - 27, (bounds.size.h - 20) / 2, 20, 20));
     gbitmap_destroy(check);
@@ -670,6 +667,8 @@ static void edit_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
+  window_set_background_color(window, GColorBlack);
+
   s_edit_menu = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_edit_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = edit_get_num_sections,
@@ -679,6 +678,9 @@ static void edit_window_load(Window *window) {
   });
   menu_layer_set_click_config_onto_window(s_edit_menu, window);
   menu_layer_pad_bottom_enable(s_edit_menu, true);
+  // Dark mode, matching the main menu.
+  menu_layer_set_normal_colors(s_edit_menu, GColorBlack, GColorWhite);
+  menu_layer_set_highlight_colors(s_edit_menu, GColorWhite, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_edit_menu));
 
   s_edit_status = text_layer_create(GRect(8, (bounds.size.h - 60) / 2, bounds.size.w - 16, 60));
@@ -686,7 +688,7 @@ static void edit_window_load(Window *window) {
   text_layer_set_text_alignment(s_edit_status, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_edit_status, GTextOverflowModeWordWrap);
   text_layer_set_background_color(s_edit_status, GColorClear);
-  text_layer_set_text_color(s_edit_status, GColorBlack);
+  text_layer_set_text_color(s_edit_status, GColorWhite);
   layer_add_child(root, text_layer_get_layer(s_edit_status));
 }
 
@@ -741,34 +743,24 @@ static Window *s_main_window;
 static MenuLayer *s_main_menu;
 
 static uint16_t main_get_num_sections(MenuLayer *menu_layer, void *callback_context) {
-  return 2;
+  return 1;
 }
 
 static uint16_t main_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                   void *callback_context) {
-  return section_index == SECTION_ACTIONS ? 1 :
-         (s_shortcut_count > 0 ? s_shortcut_count : 1);
-}
-
-static int16_t main_get_header_height(MenuLayer *menu_layer, uint16_t section_index,
-                                      void *callback_context) {
-  return HEADER_HEIGHT;
-}
-
-static void main_draw_header(GContext *ctx, const Layer *cell_layer, uint16_t section_index,
-                             void *callback_context) {
-  menu_cell_title_draw(ctx, cell_layer,
-                       section_index == SECTION_ACTIONS ? "Actions" : "Shortcuts");
+  // Row 0 = "Edit shortcuts"; then one row per shortcut; a hint row when empty.
+  return 1 + (s_shortcut_count > 0 ? s_shortcut_count : 1);
 }
 
 static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
-  if (cell_index->section == SECTION_ACTIONS) {
+  uint16_t row = cell_index->row;
+  if (row == 0) {
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(ICON_PLUS_IDX));
     menu_cell_basic_draw(ctx, cell_layer, "Edit shortcuts", NULL, icon);
     gbitmap_destroy(icon);
-  } else if (cell_index->row < s_shortcut_count) {
-    Shortcut *sc = &s_shortcuts[cell_index->row];
+  } else if (row <= s_shortcut_count) {
+    Shortcut *sc = &s_shortcuts[row - 1];
     GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
     menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key,
                          sc->area[0] ? sc->area : NULL, icon);
@@ -780,10 +772,11 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
 }
 
 static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
-  if (cell_index->section == SECTION_ACTIONS) {
+  uint16_t row = cell_index->row;
+  if (row == 0) {
     push_edit_window();
-  } else if (cell_index->row < s_shortcut_count) {
-    execute_shortcut(&s_shortcuts[cell_index->row]);
+  } else if (row <= s_shortcut_count) {
+    execute_shortcut(&s_shortcuts[row - 1]);
   } else {
     push_edit_window();
   }
@@ -793,17 +786,20 @@ static void main_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
+  window_set_background_color(window, GColorBlack);
+
   s_main_menu = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_main_menu, NULL, (MenuLayerCallbacks){
     .get_num_sections = main_get_num_sections,
     .get_num_rows = main_get_num_rows,
-    .get_header_height = main_get_header_height,
-    .draw_header = main_draw_header,
     .draw_row = main_draw_row,
     .select_click = main_select_cb,
   });
   menu_layer_set_click_config_onto_window(s_main_menu, window);
   menu_layer_pad_bottom_enable(s_main_menu, true);
+  // Dark mode: black rows, white text, bright separators; inverse highlight.
+  menu_layer_set_normal_colors(s_main_menu, GColorBlack, GColorWhite);
+  menu_layer_set_highlight_colors(s_main_menu, GColorWhite, GColorBlack);
   layer_add_child(root, menu_layer_get_layer(s_main_menu));
 }
 
@@ -930,11 +926,10 @@ static void init(void) {
 
   persist_load();
 
-#if defined(PBL_TOUCH)
   // Opt in to touch navigation so the MenuLayers scroll and activate by
-  // swipe/tap on touch hardware; buttons keep working as before.
+  // swipe/tap on touch hardware; buttons keep working as before. The call is
+  // a no-op macro on non-touch platforms, so no compile-time guard is needed.
   app_touch_navigation_enable(true);
-#endif
 
   push_main_window();
 }
