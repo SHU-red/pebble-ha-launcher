@@ -160,6 +160,8 @@ typedef struct {
   uint8_t icon_idx;
   uint8_t missing;  // 1 = script no longer exists in Home Assistant
   uint8_t confirm;  // 1 = require approval before executing
+  char labels[64];  // HA script labels (tags), comma-joined
+  char icon_name[40]; // mdi icon name without prefix (category line)
 } Shortcut;
 
 static Shortcut s_shortcuts[MAX_SHORTCUTS];
@@ -205,17 +207,12 @@ static void persist_load(void) {
   }
   s_shortcut_count = (uint16_t)count;
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
-    int n = persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, &s_shortcuts[i], sizeof(Shortcut));
-    if (n >= (int)(sizeof(Shortcut) - 2)) {
-      // New format, or legacy blobs missing the appended bytes.
-      if (n == (int)(sizeof(Shortcut) - 1)) {
-        s_shortcuts[i].confirm = 0;      // missing-era blob
-      } else if (n < (int)sizeof(Shortcut)) {
-        s_shortcuts[i].missing = 0;      // pre-missing blob
-        s_shortcuts[i].confirm = 0;
-      }
-    } else {
-      memset(&s_shortcuts[i], 0, sizeof(Shortcut));
+    Shortcut *sc = &s_shortcuts[i];
+    memset(sc, 0, sizeof(Shortcut)); // new fields (labels/icon_name) must be clean
+    int n = persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, sc, sizeof(Shortcut));
+    if (n < (int)sizeof(Shortcut)) {
+      sc->missing = 0; // pre-missing / missing-era blobs lack these bytes
+      sc->confirm = 0;
     }
   }
   s_confirm_enabled = persist_read_int(PERSIST_KEY_CONFIRM) != 0;
@@ -641,6 +638,8 @@ static void metadata_apply(void) {
       snprintf(sc->name, sizeof(sc->name), "%s",
                s_scripts[j].name[0] ? s_scripts[j].name : s_scripts[j].key);
       snprintf(sc->area, sizeof(sc->area), "%s", s_scripts[j].area);
+      snprintf(sc->labels, sizeof(sc->labels), "%s", s_scripts[j].labels);
+      snprintf(sc->icon_name, sizeof(sc->icon_name), "%s", s_scripts[j].icon_name);
       sc->icon_idx = s_scripts[j].icon_idx;
       sc->missing = 0;
       updated++;
@@ -689,13 +688,20 @@ static void edit_render(void) {
     return;
   }
   edit_hide_status();
-  // The edit screen contacted HA anyway: refresh the stored shortcut icons so
-  // the main list shows the scripts' current icons.
+  // The edit screen contacted HA anyway: refresh the stored shortcut icons
+  // and metadata (labels, category) so the main list stays in sync.
   bool changed = false;
   for (uint16_t i = 0; i < s_script_count; i++) {
     int32_t idx = shortcut_index_for_key(s_scripts[i].key);
-    if (idx >= 0 && s_scripts[i].icon_idx != s_shortcuts[idx].icon_idx) {
+    if (idx >= 0 &&
+        (s_scripts[i].icon_idx != s_shortcuts[idx].icon_idx ||
+         strcmp(s_scripts[i].labels, s_shortcuts[idx].labels) != 0 ||
+         strcmp(s_scripts[i].icon_name, s_shortcuts[idx].icon_name) != 0)) {
       s_shortcuts[idx].icon_idx = s_scripts[i].icon_idx;
+      snprintf(s_shortcuts[idx].labels, sizeof(s_shortcuts[idx].labels), "%s",
+               s_scripts[i].labels);
+      snprintf(s_shortcuts[idx].icon_name, sizeof(s_shortcuts[idx].icon_name), "%s",
+               s_scripts[i].icon_name);
       changed = true;
     }
   }
@@ -707,6 +713,28 @@ static void edit_render(void) {
 
 // ---- pick / unpick ----
 
+// Remember where shortcuts were removed, so a re-pick (cycling through OFF)
+// restores the previous launcher position instead of appending at the end —
+// the user's set order must never change outside the Change Order screen.
+static char s_removed_keys[8][64];
+static int32_t s_removed_pos[8];
+static uint8_t s_removed_next;
+
+static int32_t removed_position(const char *key) {
+  for (uint8_t i = 0; i < 8; i++) {
+    if (s_removed_keys[i][0] && strcmp(s_removed_keys[i], key) == 0) {
+      return s_removed_pos[i];
+    }
+  }
+  return -1;
+}
+
+static void remember_removed(const char *key, int32_t pos) {
+  uint8_t slot = s_removed_next++ % 8;
+  snprintf(s_removed_keys[slot], sizeof(s_removed_keys[slot]), "%s", key);
+  s_removed_pos[slot] = pos;
+}
+
 static void pick_script(uint16_t row, uint8_t confirm) {
   ScriptEntry *e = &s_scripts[row];
   if (!e->key[0] || shortcut_index_for_key(e->key) >= 0) {
@@ -716,13 +744,27 @@ static void pick_script(uint16_t row, uint8_t confirm) {
     edit_show_status("Max 64 shortcuts", GColorRed);
     return;
   }
-  Shortcut *sc = &s_shortcuts[s_shortcut_count];
+  Shortcut *sc;
+  int32_t restore = removed_position(e->key);
+  if (restore >= 0) {
+    if (restore > (int32_t)s_shortcut_count) {
+      restore = s_shortcut_count;
+    }
+    memmove(&s_shortcuts[restore + 1], &s_shortcuts[restore],
+            (size_t)(s_shortcut_count - (uint16_t)restore) * sizeof(Shortcut));
+    sc = &s_shortcuts[restore];
+    s_shortcut_count++;
+  } else {
+    sc = &s_shortcuts[s_shortcut_count++];
+  }
   snprintf(sc->key, sizeof(sc->key), "%s", e->key);
   snprintf(sc->name, sizeof(sc->name), "%s", e->name[0] ? e->name : e->key);
   snprintf(sc->area, sizeof(sc->area), "%s", e->area);
+  snprintf(sc->labels, sizeof(sc->labels), "%s", e->labels);
+  snprintf(sc->icon_name, sizeof(sc->icon_name), "%s", e->icon_name);
   sc->icon_idx = e->icon_idx;
+  sc->missing = 0;
   sc->confirm = confirm;
-  s_shortcut_count++;
   persist_save();
   edit_render();
 }
@@ -733,6 +775,7 @@ static void unpick_script(uint16_t row) {
   if (idx < 0) {
     return;
   }
+  remember_removed(e->key, idx);
   memmove(&s_shortcuts[idx], &s_shortcuts[idx + 1],
           (size_t)(s_shortcut_count - (uint16_t)idx - 1) * sizeof(Shortcut));
   s_shortcut_count--;
@@ -823,8 +866,8 @@ static void bar_animate_to(GColor to) {
 //! page: white body, colored top banner (36px) with the script icon in it,
 //! black info text. A full-width color band at the select-button level shows
 //! the OFF/ON/CONFIRM state (grey/green/orange) and toggles on SELECT.
-//! Above the bar: area, tags. Below: category (the script's mdi icon name),
-//! and the entity key as the footer.
+//! Above the bar: area, tags. Below: the mdi icon name, and the entity key
+//! as the footer.
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
@@ -843,9 +886,10 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_context_set_fill_color(ctx, s_accent);
   graphics_fill_rect(ctx, banner, 0, GCornerNone);
   GBitmap *icon = gbitmap_create_with_resource(icon_resource(e->icon_idx));
+  // Native 32x32 draw — downscaling 1-bit bitmaps clips bottom/right.
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
   graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 4, 30, 25));
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 2, 32, 32));
   gbitmap_destroy(icon);
   graphics_context_set_text_color(ctx, GColorWhite);
   graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
@@ -887,10 +931,12 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
 
-  // Info below the bar: category (script's mdi icon name).
+  // Info below the bar: the script's mdi icon name. (HA has no "category"
+  // attribute for scripts — labels are the user-defined grouping; the icon
+  // name is what the entity registry provides.)
   y = center + bar_h / 2 + 6;
   if (e->icon_name[0]) {
-    snprintf(row, sizeof(row), "Category: %s", e->icon_name);
+    snprintf(row, sizeof(row), "Icon: %s", e->icon_name);
     graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
                        GRect(margin, y, w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -1076,7 +1122,7 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
                          "Select, move with up/down, select to drop", NULL);
   } else if (cell_index->row == 2) {
     menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
-                         "Refresh names and icons from Home Assistant", NULL);
+                         "Refresh names, icons and labels from Home Assistant", NULL);
   }
 }
 
@@ -1136,15 +1182,37 @@ static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *
     return;
   }
   Shortcut *sc = &s_shortcuts[cell_index->row];
+  GRect b = layer_get_bounds(cell_layer);
+  bool selected = menu_layer_is_index_selected(s_reorder_menu, (MenuIndex *)cell_index);
+  bool held = (s_reorder_held == (int32_t)cell_index->row);
+
+  // Row background: accent when selected, theme otherwise.
+  graphics_context_set_fill_color(ctx, selected ? s_accent : theme_bg());
+  graphics_fill_rect(ctx, b, 0, GCornerNone);
+
+  // Icon at native 32x32: downscaling 1-bit bitmaps clips bottom/right.
+  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
+  graphics_context_set_compositing_mode(ctx, GCompOpSet);
+  graphics_context_set_fill_color(ctx, selected ? GColorBlack : theme_fg());
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 32) / 2, 32, 32));
+  gbitmap_destroy(icon);
+
+  graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_fg());
+  graphics_draw_text(ctx, sc->name[0] ? sc->name : sc->key,
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                     GRect(44, 4, b.size.w - 50, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
   char subtitle[64];
-  if (s_reorder_held == (int32_t)cell_index->row) {
-    snprintf(subtitle, sizeof(subtitle), "Moving - up/down shifts, SELECT drops");
+  if (held) {
+    snprintf(subtitle, sizeof(subtitle), "MOVE");
   } else {
     snprintf(subtitle, sizeof(subtitle), "%d of %d", cell_index->row + 1, s_shortcut_count);
   }
-  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
-  menu_cell_basic_draw(ctx, cell_layer, sc->name[0] ? sc->name : sc->key, subtitle, icon);
-  gbitmap_destroy(icon);
+  graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
+  graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(44, 27, b.size.w - 50, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
 static void reorder_toggle_hold(void) {
@@ -1180,7 +1248,9 @@ static void reorder_move(int32_t delta) {
   swap_shortcuts(s_reorder_held, target);
   s_reorder_held = target;
   MenuIndex idx = { .section = 0, .row = (uint16_t)target };
-  menu_layer_set_selected_index(s_reorder_menu, idx, MenuRowAlignCenter, true);
+  // Instant jump (no scroll animation): rapid up/down presses would cancel
+  // the animation mid-flight and leave the held row half off-screen.
+  menu_layer_set_selected_index(s_reorder_menu, idx, MenuRowAlignCenter, false);
   menu_layer_reload_data(s_reorder_menu);
 }
 
@@ -1321,9 +1391,12 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
       icon_res = icon_resource(sc->icon_idx);
     }
     GBitmap *icon = gbitmap_create_with_resource(icon_res);
+    // Native 32x32 draw: downscaling 1-bit bitmaps clips bottom/right, and
+    // GCompOpSet paints them in the fill color — the icon always matches the
+    // title color (theme fg / black on accent / exec color).
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_context_set_fill_color(ctx, exec ? exec_col : (selected ? GColorBlack : theme_fg()));
-    graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 24) / 2, 24, 24));
+    graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 32) / 2, 32, 32));
     gbitmap_destroy(icon);
 
     const char *title;
@@ -1335,7 +1408,7 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     graphics_context_set_text_color(ctx,
         exec ? exec_col : (selected ? GColorBlack : theme_fg()));
     graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(36, 7, b.size.w - 42, 22),
+                       GRect(44, 4, b.size.w - 50, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
     if (exec) {
@@ -1344,14 +1417,14 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
         graphics_context_set_text_color(ctx, exec_col);
         graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
                            fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                           GRect(36, 27, b.size.w - 42, 18),
+                           GRect(44, 27, b.size.w - 50, 18),
                            GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       }
     } else if (sc->missing) {
       graphics_context_set_text_color(ctx, selected ? GColorDarkGray : GColorRed);
       graphics_draw_text(ctx, "Missing in Home Assistant",
                          fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                         GRect(36, 27, b.size.w - 60, 18),
+                         GRect(44, 27, b.size.w - 68, 18),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       graphics_context_set_fill_color(ctx, GColorRed);
       graphics_fill_circle(ctx, GPoint(b.size.w - 16, 16), 8);
@@ -1359,11 +1432,28 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
       graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                          GRect(b.size.w - 24, 8, 16, 16),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-    } else if (sc->area[0]) {
-      graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
-      graphics_draw_text(ctx, sc->area, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                         GRect(36, 27, b.size.w - 42, 18),
-                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    } else {
+      // Second line: <area> - <tags> - <category> to tell same-named scripts
+      // apart; only the parts HA actually provides.
+      char sub[96];
+      sub[0] = '\0';
+      if (sc->area[0]) {
+        snprintf(sub, sizeof(sub), "%s", sc->area);
+      }
+      if (sc->labels[0]) {
+        size_t l = strlen(sub);
+        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " - " : "", sc->labels);
+      }
+      if (sc->icon_name[0]) {
+        size_t l = strlen(sub);
+        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " - " : "", sc->icon_name);
+      }
+      if (sub[0]) {
+        graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
+        graphics_draw_text(ctx, sub, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                           GRect(44, 27, b.size.w - 50, 18),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      }
     }
   } else {
     menu_cell_basic_draw(ctx, cell_layer, "No shortcuts yet",

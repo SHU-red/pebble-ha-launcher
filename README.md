@@ -3,6 +3,9 @@
 A modern, touch-first Home Assistant script launcher for Pebble.
 
 - Settings-menu-style shortcut list with touch navigation (swipe to scroll, tap to run)
+- Each shortcut row: bold name with an area / tags / icon line underneath to
+  tell same-named scripts apart; a Change Order screen reorders them (the
+  order is never touched by metadata updates)
 - Edit screen fetches available HA scripts (with icons, areas and labels) only when opened
 - Optional confirm-before-execute prompt, toggleable from the phone settings page
 - Errors are surfaced in the app (no silent failures)
