@@ -18,7 +18,7 @@ var messageKeys = require('message_keys');
 
 var CONFIG_KEY = 'haConfig';
 var CLAY_SETTINGS_KEY = 'clay-settings';
-var MAX_SHORTCUTS = 64;
+var MAX_SHORTCUTS = 32;
 var EXECUTE_TIMEOUT_MS = 10000;
 var BROWSE_TIMEOUT_MS = 20000;
 

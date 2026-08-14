@@ -14,7 +14,7 @@
 // Constants
 // ---------------------------------------------------------------------------
 
-#define MAX_SHORTCUTS 64
+#define MAX_SHORTCUTS 32
 
 #define PERSIST_KEY_COUNT 1          // int32: number of stored shortcuts
 #define PERSIST_KEY_CONFIRM 2        // int32: 0/1 confirm-before-execute
@@ -943,7 +943,7 @@ static void pick_script(uint16_t row, uint8_t confirm) {
     return;
   }
   if (s_shortcut_count >= MAX_SHORTCUTS) {
-    edit_show_status("Max 64 shortcuts", GColorRed);
+    edit_show_status("Max 32 shortcuts", GColorRed);
     return;
   }
   Shortcut *sc;
