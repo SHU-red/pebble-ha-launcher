@@ -12,6 +12,7 @@
   },
   "pebble": {
     "displayName": "HA Launcher",
+    "shortName": "HA Launcher",
     "uuid": "fb5b34eb-e743-49e4-b9e6-d8046011b831",
     "sdkVersion": "3",
     "enableMultiJS": true,
