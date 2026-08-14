@@ -23,6 +23,7 @@
 #define PERSIST_KEY_ACCENT 5         // int32: GColor8 argb value of the accent color
 #define PERSIST_KEY_DARKMODE 6       // int32: 1 = dark, 0 = light
 #define PERSIST_KEY_TOUCH 7          // int32: 1 = native touch navigation enabled
+#define PERSIST_KEY_AUTOCLOSE 8      // int32: seconds after success before auto-close (0 = never)
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
@@ -285,6 +286,9 @@ static uint8_t s_accent_argb;
 static uint32_t s_accent_hex;
 static bool s_dark_mode;
 static bool s_touch_enabled;
+static int32_t s_autoclose_seconds; // 0 = never close automatically
+
+static AppTimer *s_autoclose_timer;
 
 static int32_t shortcut_index_for_key(const char *key) {
   if (!key || !key[0]) {
@@ -340,10 +344,17 @@ static void persist_load(void) {
   s_accent_argb = s_accent.argb;
   s_dark_mode = persist_read_int(PERSIST_KEY_DARKMODE) != 0;
   s_touch_enabled = persist_read_int(PERSIST_KEY_TOUCH) != 0;
+  s_autoclose_seconds = persist_read_int(PERSIST_KEY_AUTOCLOSE);
+  // Whitelist: only the settings-page choices are valid; anything else = never.
+  if (s_autoclose_seconds != 3 && s_autoclose_seconds != 5 && s_autoclose_seconds != 10 &&
+      s_autoclose_seconds != 15 && s_autoclose_seconds != 30) {
+    s_autoclose_seconds = 0;
+  }
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
-                                uint32_t accent_hex, bool dark_mode, bool touch_enabled) {
+                                uint32_t accent_hex, bool dark_mode, bool touch_enabled,
+                                int32_t autoclose_seconds) {
   if (base_url) {
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
@@ -366,6 +377,12 @@ static void persist_save_config(const char *base_url, const char *token, bool co
   persist_write_int(PERSIST_KEY_DARKMODE, s_dark_mode ? 1 : 0);
   s_touch_enabled = touch_enabled;
   persist_write_int(PERSIST_KEY_TOUCH, s_touch_enabled ? 1 : 0);
+  if (autoclose_seconds != 3 && autoclose_seconds != 5 && autoclose_seconds != 10 &&
+      autoclose_seconds != 15 && autoclose_seconds != 30) {
+    autoclose_seconds = 0;
+  }
+  s_autoclose_seconds = autoclose_seconds;
+  persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +449,33 @@ static void clear_exec_overlay(void) {
   if (s_exec_revert_timer) { app_timer_cancel(s_exec_revert_timer); s_exec_revert_timer = NULL; }
   s_exec_row = -1;
   s_exec_state = EXEC_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Automatic close: after a successful execution, leave the app (back to the
+// watchface) after the configured delay. Cancelled by any new execution or
+// button press, so it only fires when the user just sits watching.
+// ---------------------------------------------------------------------------
+
+static void cancel_autoclose(void) {
+  if (s_autoclose_timer) {
+    app_timer_cancel(s_autoclose_timer);
+    s_autoclose_timer = NULL;
+  }
+}
+
+static void autoclose_cb(void *data) {
+  s_autoclose_timer = NULL;
+  // Pop every window: the watchface reappears, i.e. the app "closes".
+  window_stack_pop_all(true);
+}
+
+static void arm_autoclose(void) {
+  cancel_autoclose();
+  if (s_autoclose_seconds > 0) {
+    s_autoclose_timer = app_timer_register((uint32_t)s_autoclose_seconds * 1000,
+                                           autoclose_cb, NULL);
+  }
 }
 
 static MenuLayer *s_main_menu;
@@ -618,6 +662,7 @@ static void execute_shortcut(const Shortcut *sc) {
 }
 
 static void start_execute(const char *key) {
+  cancel_autoclose(); // a new execution supersedes any pending auto-close
   int32_t idx = shortcut_index_for_key(key);
   if (idx >= 0) {
     clear_exec_overlay();
@@ -1606,6 +1651,7 @@ static uint16_t main_total_rows(void) {
 }
 
 static void main_up_click(ClickRecognizerRef rec, void *ctx) {
+  cancel_autoclose(); // any interaction keeps the app open
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   if (idx.row <= 1) {
     push_submenu_window();  // push upwards on the first entry
@@ -1616,6 +1662,7 @@ static void main_up_click(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void main_down_click(ClickRecognizerRef rec, void *ctx) {
+  cancel_autoclose(); // any interaction keeps the app open
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   if (idx.row + 1 < main_total_rows()) {
     idx.row++;
@@ -1624,6 +1671,7 @@ static void main_down_click(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void main_select_click(ClickRecognizerRef rec, void *ctx) {
+  cancel_autoclose(); // any interaction keeps the app open
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   main_select_cb(s_main_menu, &idx, NULL);
 }
@@ -1692,6 +1740,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       if (s_timeout_timer) { app_timer_cancel(s_timeout_timer); s_timeout_timer = NULL; }
       if (code == 200) {
         s_exec_state = EXEC_DONE;
+        arm_autoclose();
       } else {
         s_exec_state = EXEC_FAILED;
         snprintf(s_exec_error, sizeof(s_exec_error), "%s", text[0] ? text : "Error");
@@ -1701,6 +1750,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     } else if (s_dialog_active) {
       if (code == 200) {
         dialog_show_final(true, "Done!");
+        arm_autoclose();
       } else {
         dialog_show_final(false, text[0] ? text : "Error");
       }
@@ -1731,13 +1781,15 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *acc_t = dict_find(iter, MESSAGE_KEY_AccentColor);
     Tuple *dark_t = dict_find(iter, MESSAGE_KEY_DarkMode);
     Tuple *touch_t = dict_find(iter, MESSAGE_KEY_TouchEnabled);
+    Tuple *auto_t = dict_find(iter, MESSAGE_KEY_AutoClose);
     persist_save_config(
       base_t->value->cstring,
       tok_t ? tok_t->value->cstring : NULL,
       conf_t ? conf_t->value->int32 != 0 : s_confirm_enabled,
       acc_t ? (uint32_t)acc_t->value->int32 : 0,
       dark_t ? dark_t->value->int32 != 0 : s_dark_mode,
-      touch_t ? touch_t->value->int32 != 0 : s_touch_enabled);
+      touch_t ? touch_t->value->int32 != 0 : s_touch_enabled,
+      auto_t ? auto_t->value->int32 : s_autoclose_seconds);
     apply_accent();
     apply_theme();
     app_touch_navigation_enable(s_touch_enabled);
@@ -1760,6 +1812,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dict_write_int32(out, MESSAGE_KEY_AccentColor, (int32_t)s_accent_hex);
       dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
       dict_write_int32(out, MESSAGE_KEY_TouchEnabled, s_touch_enabled ? 1 : 0);
+      dict_write_int32(out, MESSAGE_KEY_AutoClose, s_autoclose_seconds);
       dict_write_end(out);
       app_message_outbox_send();
     }

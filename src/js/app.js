@@ -446,6 +446,10 @@ function importClaySettings() {
       cfg.confirm = plain('ConfirmEnabled') ? 1 : 0;
       changed = true;
     }
+    if (plain('AutoClose') !== undefined) {
+      cfg.autoClose = plain('AutoClose');
+      changed = true;
+    }
     if (changed) {
       saveConfig(cfg);
       console.log('ready: recovered config from clay-settings');
@@ -476,16 +480,19 @@ Pebble.addEventListener('appmessage', function(e) {
   var token = payloadValue(payload, 'Token');
   if (baseUrl !== undefined && baseUrl !== null) {
     var confirmVal = payloadValue(payload, 'ConfirmEnabled');
+    var autoCloseVal = payloadValue(payload, 'AutoClose');
     var cfg = loadConfig();
     cfg.baseUrl = normalizeBaseUrl(String(baseUrl));
     cfg.token = (token !== undefined && token !== null) ? String(token) : (cfg.token || '');
     cfg.confirm = (confirmVal !== undefined && confirmVal !== null) ? (confirmVal ? 1 : 0) : cfg.confirm;
+    cfg.autoClose = (autoCloseVal !== undefined && autoCloseVal !== null) ? autoCloseVal : cfg.autoClose;
     saveConfig(cfg);
     try {
       localStorage.setItem(CLAY_SETTINGS_KEY, JSON.stringify({
         BaseUrl: cfg.baseUrl,
         Token: cfg.token,
-        ConfirmEnabled: cfg.confirm ? true : false
+        ConfirmEnabled: cfg.confirm ? true : false,
+        AutoClose: cfg.autoClose || 0
       }));
     } catch (err) { /* best effort */ }
     console.log('appmessage: config from watch saved');

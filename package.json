@@ -45,7 +45,8 @@
       "Token",
       "RequestConfig",
       "DarkMode",
-      "TouchEnabled"
+      "TouchEnabled",
+      "AutoClose"
     ],
     "resources": {
       "media": [
