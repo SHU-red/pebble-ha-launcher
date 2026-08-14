@@ -134,24 +134,7 @@ var MDI_ICONS = [
   'smoke-detector',     // 75
   'solar-power',        // 76
   'bank',               // 77
-  'currency-eur',       // 78
-  'piggy-bank',         // 79
-  'gamepad',            // 80
-  'gauge',              // 81
-  'weather-sunset-up',  // 82
-  'weather-cloudy',     // 83
-  'weather-rainy',      // 84
-  'weather-fog',        // 85
-  'bell-off',           // 86
-  'shuffle',            // 87
-  'repeat',             // 88
-  'arrow-up',           // 89
-  'arrow-down',         // 90
-  'rocket',             // 91
-  'garage-open-variant',// 92
-  'watch',              // 93
-  'pine-tree',          // 94
-  'baby-bottle'         // 95
+  'currency-eur'        // 78
 ];
 
 var MDI_ICON_INDEX = {};
@@ -229,7 +212,7 @@ var MDI_KEYWORDS = {};
     // people
     'person': 'account', 'user': 'account', 'human': 'account',
     'face': 'account', 'man': 'account', 'woman': 'account', 'boy': 'account',
-    'girl': 'account', 'child': 'account', 'family': 'account',
+    'girl': 'account', 'child': 'account', 'baby': 'account', 'family': 'account',
     'group': 'account', 'team': 'account', 'contact': 'account',
     'avatar': 'account', 'profile': 'account',
     // power & energy
@@ -280,8 +263,8 @@ var MDI_KEYWORDS = {};
     'morning': 'weather-sunny',
     'moon': 'weather-night', 'stars': 'weather-night', 'midnight': 'weather-night',
     'night': 'weather-night', 'sleep': 'weather-night',
-    'cloudy': 'weather-cloudy', 'rain': 'weather-rainy', 'pouring': 'weather-rainy',
-    'storm': 'weather-rainy', 'fog': 'weather-fog', 'haze': 'weather-fog',
+    'cloudy': 'cloud', 'rain': 'water', 'pouring': 'water',
+    'storm': 'water', 'fog': 'cloud', 'haze': 'cloud',
     'humid': 'water', 'humidifier': 'water', 'dehumidifier': 'water',
     'valve': 'water', 'climate': 'thermometer', 'cover': 'blinds',
     // locations
@@ -291,12 +274,11 @@ var MDI_KEYWORDS = {};
     // home & appliances
     'cleaner': 'robot', 'vacuum': 'robot', 'mop': 'robot', 'broom': 'robot',
     'sweep': 'robot',
-    'plant': 'leaf', 'flower': 'leaf', 'tree': 'pine-tree', 'grass': 'leaf',
+    'plant': 'leaf', 'flower': 'leaf', 'tree': 'leaf', 'pine': 'leaf', 'grass': 'leaf',
     'sprout': 'leaf', 'nature': 'leaf', 'eco': 'leaf', 'garden': 'leaf',
     'pot': 'leaf',
-    'launch': 'rocket', 'send': 'rocket', 'export': 'rocket',
-    'smartwatch': 'watch',
-    'bottle': 'baby-bottle', 'feeding': 'baby-bottle', 'milk': 'baby-bottle'
+    'send': 'message',
+    'watch': 'clock', 'smartwatch': 'clock',
   };
   var k;
   for (k in aliases) {

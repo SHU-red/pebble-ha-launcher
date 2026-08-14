@@ -32,11 +32,6 @@
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
 
-#define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
-#define ICON_ROCKET_IDX 91          // index of ICON_ROCKET in the icon table
-#define ICON_ALERT_IDX 60           // index of ICON_ALERT in the icon table
-#define ICON_CHECK_IDX 44           // index of ICON_CHECK in the icon table
-
 // ---------------------------------------------------------------------------
 // Icon table: index == pebble.resources.media order in package.json.
 // Index 0 is the generic icon (ICON_SCRIPT_TEXT); unknown/empty -> 0.
@@ -122,23 +117,6 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_SOLAR_POWER,
   RESOURCE_ID_ICON_BANK,
   RESOURCE_ID_ICON_CURRENCY_EUR,
-  RESOURCE_ID_ICON_PIGGY_BANK,
-  RESOURCE_ID_ICON_GAMEPAD,
-  RESOURCE_ID_ICON_GAUGE,
-  RESOURCE_ID_ICON_WEATHER_SUNSET_UP,
-  RESOURCE_ID_ICON_WEATHER_CLOUDY,
-  RESOURCE_ID_ICON_WEATHER_RAINY,
-  RESOURCE_ID_ICON_WEATHER_FOG,
-  RESOURCE_ID_ICON_BELL_OFF,
-  RESOURCE_ID_ICON_SHUFFLE,
-  RESOURCE_ID_ICON_REPEAT,
-  RESOURCE_ID_ICON_ARROW_UP,
-  RESOURCE_ID_ICON_ARROW_DOWN,
-  RESOURCE_ID_ICON_ROCKET,
-  RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT,
-  RESOURCE_ID_ICON_WATCH,
-  RESOURCE_ID_ICON_PINE_TREE,
-  RESOURCE_ID_ICON_BABY_BOTTLE,
 };
 
 // White-glyph variants of the same table, used on dark backgrounds. The
@@ -224,23 +202,6 @@ static const uint32_t ICONS_WHITE[] = {
   RESOURCE_ID_ICON_SOLAR_POWER_WHITE,
   RESOURCE_ID_ICON_BANK_WHITE,
   RESOURCE_ID_ICON_CURRENCY_EUR_WHITE,
-  RESOURCE_ID_ICON_PIGGY_BANK_WHITE,
-  RESOURCE_ID_ICON_GAMEPAD_WHITE,
-  RESOURCE_ID_ICON_GAUGE_WHITE,
-  RESOURCE_ID_ICON_WEATHER_SUNSET_UP_WHITE,
-  RESOURCE_ID_ICON_WEATHER_CLOUDY_WHITE,
-  RESOURCE_ID_ICON_WEATHER_RAINY_WHITE,
-  RESOURCE_ID_ICON_WEATHER_FOG_WHITE,
-  RESOURCE_ID_ICON_BELL_OFF_WHITE,
-  RESOURCE_ID_ICON_SHUFFLE_WHITE,
-  RESOURCE_ID_ICON_REPEAT_WHITE,
-  RESOURCE_ID_ICON_ARROW_UP_WHITE,
-  RESOURCE_ID_ICON_ARROW_DOWN_WHITE,
-  RESOURCE_ID_ICON_ROCKET_WHITE,
-  RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT_WHITE,
-  RESOURCE_ID_ICON_WATCH_WHITE,
-  RESOURCE_ID_ICON_PINE_TREE_WHITE,
-  RESOURCE_ID_ICON_BABY_BOTTLE_WHITE,
 };
 
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
@@ -398,6 +359,7 @@ static AppTimer *s_dismiss_timer;
 static AppTimer *s_pulse_timer;
 static bool s_dialog_active;
 static bool s_dialog_confirm;
+static bool s_dialog_delete;
 static char s_dialog_text_buf[128];
 static uint8_t s_pulse_phase;
 static GColor s_dialog_color;
@@ -504,8 +466,15 @@ static void dialog_bg_update_proc(Layer *layer, GContext *ctx) {
 static void dialog_show_final(bool success, const char *text);
 static void dialog_unload(Window *window);
 static void dialog_dismiss_cb(void *data);
+static void delete_shortcut_idx(int32_t idx);
 
 static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
+  if (s_dialog_delete) {
+    // Missing-in-HA prompt: SELECT deletes the shortcut.
+    dialog_dismiss_cb(NULL);
+    delete_shortcut_idx(shortcut_index_for_key(s_confirm_ctx.key));
+    return;
+  }
   if (!s_dialog_confirm) return;
   s_dialog_confirm = false;
   // The confirm screen is only an intermediate step: dismiss it and run
@@ -516,6 +485,12 @@ static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
+  if (s_dialog_delete) {
+    // Missing-in-HA prompt: BACK keeps the shortcut (HA may be
+    // temporarily unreachable or the script only momentarily gone).
+    dialog_dismiss_cb(NULL);
+    return;
+  }
   if (!s_dialog_confirm) return;
   s_dialog_confirm = false;
   dialog_dismiss_cb(NULL);
@@ -599,22 +574,51 @@ static void dialog_create(void) {
 }
 
 //! Orange approval screen: one more SELECT confirms, BACK cancels.
+//! Shared dialog setup: cancel timers, reset the interaction modes, paint
+//! the background color, show white text and pulse. The caller sets its
+//! mode flag and any extra timers afterwards.
+static void dialog_prepare(GColor color, const char *text) {
+  dialog_cancel_timers();
+  s_dialog_confirm = false;
+  s_dialog_delete = false;
+  s_dialog_color = color;
+  layer_mark_dirty(s_dialog_bg);
+  text_layer_set_text_color(s_dialog_text, GColorWhite);
+  text_layer_set_text(s_dialog_text, text);
+  vibes_short_pulse();
+}
+
+//! Remember the shortcut the dialog is about (name for the prompt, key for
+//! the action) — shared by the confirm and delete prompts.
+static void dialog_capture(const Shortcut *sc) {
+  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%s",
+           sc->name[0] ? sc->name : sc->key);
+  snprintf(s_confirm_ctx.key, sizeof(s_confirm_ctx.key), "%s", sc->key);
+}
+
 static void dialog_show_confirm(const Shortcut *sc) {
   if (!s_dialog_active) {
     dialog_create();
   }
-  dialog_cancel_timers();
-  s_dialog_confirm = true;
-  s_dialog_color = GColorOrange;
-  layer_mark_dirty(s_dialog_bg);
-  text_layer_set_text_color(s_dialog_text, GColorWhite);
-  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%s",
-           sc->name[0] ? sc->name : sc->key);
-  snprintf(s_confirm_ctx.key, sizeof(s_confirm_ctx.key), "%s", sc->key);
+  dialog_capture(sc);
   snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf),
            "Run %s?\n\nSELECT: confirm\nBACK: cancel", s_confirm_ctx.name);
-  text_layer_set_text(s_dialog_text, s_dialog_text_buf);
-  vibes_short_pulse();
+  dialog_prepare(GColorOrange, s_dialog_text_buf);
+  s_dialog_confirm = true;
+}
+
+//! Red prompt for a shortcut marked missing in Home Assistant: SELECT
+//! deletes it from the launcher, BACK keeps it (HA may be temporarily
+//! unreachable or the script only momentarily gone).
+static void dialog_show_delete(const Shortcut *sc) {
+  if (!s_dialog_active) {
+    dialog_create();
+  }
+  dialog_capture(sc);
+  snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf),
+           "Delete %s?\n\nSELECT: delete\nBACK: keep", s_confirm_ctx.name);
+  dialog_prepare(GColorRed, s_dialog_text_buf);
+  s_dialog_delete = true;
 }
 
 //! Green working dialog (auto_dismiss = false, animated ellipsis).
@@ -622,13 +626,8 @@ static void dialog_show_working(const char *text) {
   if (!s_dialog_active) {
     dialog_create();
   }
-  dialog_cancel_timers();
-  s_dialog_confirm = false;
-  s_dialog_color = GColorGreen;
-  layer_mark_dirty(s_dialog_bg);
-  text_layer_set_text_color(s_dialog_text, GColorWhite);
+  dialog_prepare(GColorGreen, text);
   s_pulse_phase = 3;
-  text_layer_set_text(s_dialog_text, text);
   s_pulse_timer = app_timer_register(PULSE_INTERVAL_MS, pulse_tick_cb, NULL);
 }
 
@@ -637,16 +636,8 @@ static void dialog_show_final(bool success, const char *text) {
   if (!s_dialog_active) {
     return;
   }
-  dialog_cancel_timers();
-  s_dialog_confirm = false;
-  s_dialog_color = success ? GColorGreen : GColorRed;
-  layer_mark_dirty(s_dialog_bg);
-  text_layer_set_text_color(s_dialog_text, GColorWhite);
-  snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf), "%s", text);
-  text_layer_set_text(s_dialog_text, s_dialog_text_buf);
-  if (success) {
-    vibes_short_pulse();
-  } else {
+  dialog_prepare(success ? GColorGreen : GColorRed, text);
+  if (!success) {
     vibes_double_pulse();
   }
   s_dismiss_timer = app_timer_register(RESULT_DISMISS_MS, dialog_dismiss_cb, NULL);
@@ -930,6 +921,20 @@ static void remember_removed(const char *key, int32_t pos) {
   uint8_t slot = s_removed_next++ % 8;
   snprintf(s_removed_keys[slot], sizeof(s_removed_keys[slot]), "%s", key);
   s_removed_pos[slot] = pos;
+}
+
+//! Remove a shortcut from the launcher (SELECT on a missing row): remember
+//! its position for re-pick restoration, shift the rest down, persist.
+static void delete_shortcut_idx(int32_t idx) {
+  if (idx < 0 || idx >= s_shortcut_count) {
+    return;
+  }
+  remember_removed(s_shortcuts[idx].key, idx);
+  memmove(&s_shortcuts[idx], &s_shortcuts[idx + 1],
+          (size_t)(s_shortcut_count - (uint16_t)idx - 1) * sizeof(Shortcut));
+  s_shortcut_count--;
+  persist_save();
+  menu_layer_reload_data(s_main_menu);
 }
 
 static void pick_script(uint16_t row, uint8_t confirm) {
@@ -1709,7 +1714,14 @@ static void main_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   if (row == 0) {
     push_submenu_window();
   } else if (row <= s_shortcut_count) {
-    execute_shortcut(&s_shortcuts[row - 1]);
+    Shortcut *sc = &s_shortcuts[row - 1];
+    if (sc->missing) {
+      // Gone from Home Assistant: SELECT deletes, BACK keeps. Never try
+      // to execute a shortcut that no longer exists.
+      dialog_show_delete(sc);
+      return;
+    }
+    execute_shortcut(sc);
   } else {
     push_submenu_window();
   }
