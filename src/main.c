@@ -139,6 +139,107 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_PINE_TREE,
 };
 
+// White-glyph variants of the same table, used on dark backgrounds. The
+// 1-bit decode of grayscale PNGs paints white with GCompOpSet; these RGBA
+// glyphs composite their own color, so dark rows pick the white variant.
+static const uint32_t ICONS_WHITE[] = {
+  RESOURCE_ID_ICON_SCRIPT_TEXT_WHITE,
+  RESOURCE_ID_ICON_LIGHTBULB_WHITE,
+  RESOURCE_ID_ICON_LIGHTBULB_ON_WHITE,
+  RESOURCE_ID_ICON_LOCK_WHITE,
+  RESOURCE_ID_ICON_LOCK_OPEN_WHITE,
+  RESOURCE_ID_ICON_HOME_WHITE,
+  RESOURCE_ID_ICON_POWER_WHITE,
+  RESOURCE_ID_ICON_PLAY_WHITE,
+  RESOURCE_ID_ICON_PAUSE_WHITE,
+  RESOURCE_ID_ICON_STOP_WHITE,
+  RESOURCE_ID_ICON_BELL_WHITE,
+  RESOURCE_ID_ICON_BELL_RING_WHITE,
+  RESOURCE_ID_ICON_ALARM_WHITE,
+  RESOURCE_ID_ICON_TIMER_WHITE,
+  RESOURCE_ID_ICON_CLOCK_WHITE,
+  RESOURCE_ID_ICON_CALENDAR_WHITE,
+  RESOURCE_ID_ICON_CALENDAR_CHECK_WHITE,
+  RESOURCE_ID_ICON_DOOR_WHITE,
+  RESOURCE_ID_ICON_GARAGE_WHITE,
+  RESOURCE_ID_ICON_GARAGE_OPEN_WHITE,
+  RESOURCE_ID_ICON_CAMERA_WHITE,
+  RESOURCE_ID_ICON_VIDEO_WHITE,
+  RESOURCE_ID_ICON_MOTION_SENSOR_WHITE,
+  RESOURCE_ID_ICON_THERMOMETER_WHITE,
+  RESOURCE_ID_ICON_WEATHER_SUNNY_WHITE,
+  RESOURCE_ID_ICON_WEATHER_NIGHT_WHITE,
+  RESOURCE_ID_ICON_WATER_WHITE,
+  RESOURCE_ID_ICON_WATER_OUTLINE_WHITE,
+  RESOURCE_ID_ICON_FIRE_WHITE,
+  RESOURCE_ID_ICON_FAN_WHITE,
+  RESOURCE_ID_ICON_AIR_CONDITIONER_WHITE,
+  RESOURCE_ID_ICON_RADIATOR_WHITE,
+  RESOURCE_ID_ICON_SPEAKER_WHITE,
+  RESOURCE_ID_ICON_TELEVISION_WHITE,
+  RESOURCE_ID_ICON_VOLUME_HIGH_WHITE,
+  RESOURCE_ID_ICON_MUSIC_NOTE_WHITE,
+  RESOURCE_ID_ICON_PHONE_WHITE,
+  RESOURCE_ID_ICON_MESSAGE_WHITE,
+  RESOURCE_ID_ICON_EMAIL_WHITE,
+  RESOURCE_ID_ICON_ACCOUNT_WHITE,
+  RESOURCE_ID_ICON_KEY_WHITE,
+  RESOURCE_ID_ICON_SHIELD_WHITE,
+  RESOURCE_ID_ICON_SHIELD_CHECK_WHITE,
+  RESOURCE_ID_ICON_EYE_WHITE,
+  RESOURCE_ID_ICON_CHECK_WHITE,
+  RESOURCE_ID_ICON_CLOSE_WHITE,
+  RESOURCE_ID_ICON_PLUS_WHITE,
+  RESOURCE_ID_ICON_MINUS_WHITE,
+  RESOURCE_ID_ICON_STAR_WHITE,
+  RESOURCE_ID_ICON_HEART_WHITE,
+  RESOURCE_ID_ICON_LEAF_WHITE,
+  RESOURCE_ID_ICON_CAR_WHITE,
+  RESOURCE_ID_ICON_LIGHT_SWITCH_WHITE,
+  RESOURCE_ID_ICON_POWER_PLUG_WHITE,
+  RESOURCE_ID_ICON_REMOTE_WHITE,
+  RESOURCE_ID_ICON_BLUETOOTH_WHITE,
+  RESOURCE_ID_ICON_WIFI_WHITE,
+  RESOURCE_ID_ICON_CLOUD_WHITE,
+  RESOURCE_ID_ICON_REFRESH_WHITE,
+  RESOURCE_ID_ICON_COG_WHITE,
+  RESOURCE_ID_ICON_ALERT_WHITE,
+  RESOURCE_ID_ICON_INFORMATION_WHITE,
+  RESOURCE_ID_ICON_FLASH_WHITE,
+  RESOURCE_ID_ICON_PIN_WHITE,
+  RESOURCE_ID_ICON_MAP_MARKER_WHITE,
+  RESOURCE_ID_ICON_ROBOT_WHITE,
+  RESOURCE_ID_ICON_LAMP_WHITE,
+  RESOURCE_ID_ICON_WINDOW_CLOSED_WHITE,
+  RESOURCE_ID_ICON_BLINDS_WHITE,
+  RESOURCE_ID_ICON_WASHING_MACHINE_WHITE,
+  RESOURCE_ID_ICON_FRIDGE_WHITE,
+  RESOURCE_ID_ICON_COFFEE_WHITE,
+  RESOURCE_ID_ICON_DOORBELL_WHITE,
+  RESOURCE_ID_ICON_CCTV_WHITE,
+  RESOURCE_ID_ICON_ALARM_LIGHT_OUTLINE_WHITE,
+  RESOURCE_ID_ICON_SMOKE_DETECTOR_WHITE,
+  RESOURCE_ID_ICON_SOLAR_POWER_WHITE,
+  RESOURCE_ID_ICON_BANK_WHITE,
+  RESOURCE_ID_ICON_CURRENCY_EUR_WHITE,
+  RESOURCE_ID_ICON_PIGGY_BANK_WHITE,
+  RESOURCE_ID_ICON_GAMEPAD_WHITE,
+  RESOURCE_ID_ICON_GAUGE_WHITE,
+  RESOURCE_ID_ICON_WEATHER_SUNSET_UP_WHITE,
+  RESOURCE_ID_ICON_WEATHER_CLOUDY_WHITE,
+  RESOURCE_ID_ICON_WEATHER_RAINY_WHITE,
+  RESOURCE_ID_ICON_WEATHER_FOG_WHITE,
+  RESOURCE_ID_ICON_BELL_OFF_WHITE,
+  RESOURCE_ID_ICON_SHUFFLE_WHITE,
+  RESOURCE_ID_ICON_REPEAT_WHITE,
+  RESOURCE_ID_ICON_ARROW_UP_WHITE,
+  RESOURCE_ID_ICON_ARROW_DOWN_WHITE,
+  RESOURCE_ID_ICON_ROCKET_WHITE,
+  RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT_WHITE,
+  RESOURCE_ID_ICON_WATCH_WHITE,
+  RESOURCE_ID_ICON_PINE_TREE_WHITE,
+};
+
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
 
 //! Map a curated icon index to a resource id; out-of-range clamps to index 0.
@@ -147,6 +248,14 @@ static uint32_t icon_resource(uint8_t idx) {
     return ICONS[0];
   }
   return ICONS[idx];
+}
+
+//! Same, for the white-glyph variant set (dark backgrounds).
+static uint32_t icon_resource_white(uint8_t idx) {
+  if (idx >= ICON_COUNT) {
+    return ICONS_WHITE[0];
+  }
+  return ICONS_WHITE[idx];
 }
 
 // ---------------------------------------------------------------------------
@@ -885,10 +994,10 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   GRect banner = GRect(0, 0, bounds.size.w, banner_h);
   graphics_context_set_fill_color(ctx, s_accent);
   graphics_fill_rect(ctx, banner, 0, GCornerNone);
-  GBitmap *icon = gbitmap_create_with_resource(icon_resource(e->icon_idx));
-  // Native 32x32 draw — downscaling 1-bit bitmaps clips bottom/right.
+  GBitmap *icon = gbitmap_create_with_resource(icon_resource_white(e->icon_idx));
+  // White-glyph RGBA variant at native 32x32, composited over the accent
+  // banner (GCompOpSet alpha-composites the glyph's own color).
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
-  graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 2, 32, 32));
   gbitmap_destroy(icon);
   graphics_context_set_text_color(ctx, GColorWhite);
@@ -1190,10 +1299,12 @@ static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *
   graphics_context_set_fill_color(ctx, selected ? s_accent : theme_bg());
   graphics_fill_rect(ctx, b, 0, GCornerNone);
 
-  // Icon at native 32x32: downscaling 1-bit bitmaps clips bottom/right.
-  GBitmap *icon = gbitmap_create_with_resource(icon_resource(sc->icon_idx));
+  // Icon at native 32x32; black glyphs on light/selected rows, white on
+  // dark rows (RGBA glyphs composite their own color via GCompOpSet).
+  uint32_t icon_res = (selected || !s_dark_mode) ? icon_resource(sc->icon_idx)
+                                                 : icon_resource_white(sc->icon_idx);
+  GBitmap *icon = gbitmap_create_with_resource(icon_res);
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
-  graphics_context_set_fill_color(ctx, selected ? GColorBlack : theme_fg());
   graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 32) / 2, 32, 32));
   gbitmap_destroy(icon);
 
@@ -1384,18 +1495,20 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
 
     uint32_t icon_res;
     if (exec) {
-      icon_res = exec_failed ? RESOURCE_ID_ICON_ALERT
-                             : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK
-                                                          : RESOURCE_ID_ICON_ROCKET);
+      // Tinted glyphs: the exec state's own color (matches the title text).
+      icon_res = exec_failed ? RESOURCE_ID_ICON_ALERT_RED
+                             : (s_exec_state == EXEC_DONE ? RESOURCE_ID_ICON_CHECK_GREEN
+                                                          : RESOURCE_ID_ICON_ROCKET_GREEN);
     } else {
-      icon_res = icon_resource(sc->icon_idx);
+      // Black glyphs on light rows and on the accent selection (black text),
+      // white glyphs on dark rows — the icon always matches the title color.
+      icon_res = (selected || !s_dark_mode) ? icon_resource(sc->icon_idx)
+                                            : icon_resource_white(sc->icon_idx);
     }
     GBitmap *icon = gbitmap_create_with_resource(icon_res);
-    // Native 32x32 draw: downscaling 1-bit bitmaps clips bottom/right, and
-    // GCompOpSet paints them in the fill color — the icon always matches the
-    // title color (theme fg / black on accent / exec color).
+    // RGBA glyphs composite their own color via GCompOpSet; the transparent
+    // background is left untouched, so there is no white/black square.
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
-    graphics_context_set_fill_color(ctx, exec ? exec_col : (selected ? GColorBlack : theme_fg()));
     graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 32) / 2, 32, 32));
     gbitmap_destroy(icon);
 

@@ -529,6 +529,496 @@
           "type": "png",
           "name": "ICON_PINE_TREE",
           "file": "images/icon_094.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SCRIPT_TEXT_WHITE",
+          "file": "images/icon_000_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LIGHTBULB_WHITE",
+          "file": "images/icon_001_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LIGHTBULB_ON_WHITE",
+          "file": "images/icon_002_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LOCK_WHITE",
+          "file": "images/icon_003_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LOCK_OPEN_WHITE",
+          "file": "images/icon_004_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_HOME_WHITE",
+          "file": "images/icon_005_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_POWER_WHITE",
+          "file": "images/icon_006_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PLAY_WHITE",
+          "file": "images/icon_007_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PAUSE_WHITE",
+          "file": "images/icon_008_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_STOP_WHITE",
+          "file": "images/icon_009_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BELL_WHITE",
+          "file": "images/icon_010_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BELL_RING_WHITE",
+          "file": "images/icon_011_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ALARM_WHITE",
+          "file": "images/icon_012_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_TIMER_WHITE",
+          "file": "images/icon_013_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CLOCK_WHITE",
+          "file": "images/icon_014_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CALENDAR_WHITE",
+          "file": "images/icon_015_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CALENDAR_CHECK_WHITE",
+          "file": "images/icon_016_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_DOOR_WHITE",
+          "file": "images/icon_017_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_GARAGE_WHITE",
+          "file": "images/icon_018_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_GARAGE_OPEN_WHITE",
+          "file": "images/icon_019_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CAMERA_WHITE",
+          "file": "images/icon_020_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_VIDEO_WHITE",
+          "file": "images/icon_021_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_MOTION_SENSOR_WHITE",
+          "file": "images/icon_022_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_THERMOMETER_WHITE",
+          "file": "images/icon_023_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_SUNNY_WHITE",
+          "file": "images/icon_024_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_NIGHT_WHITE",
+          "file": "images/icon_025_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WATER_WHITE",
+          "file": "images/icon_026_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WATER_OUTLINE_WHITE",
+          "file": "images/icon_027_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_FIRE_WHITE",
+          "file": "images/icon_028_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_FAN_WHITE",
+          "file": "images/icon_029_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_AIR_CONDITIONER_WHITE",
+          "file": "images/icon_030_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_RADIATOR_WHITE",
+          "file": "images/icon_031_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SPEAKER_WHITE",
+          "file": "images/icon_032_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_TELEVISION_WHITE",
+          "file": "images/icon_033_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_VOLUME_HIGH_WHITE",
+          "file": "images/icon_034_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_MUSIC_NOTE_WHITE",
+          "file": "images/icon_035_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PHONE_WHITE",
+          "file": "images/icon_036_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_MESSAGE_WHITE",
+          "file": "images/icon_037_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_EMAIL_WHITE",
+          "file": "images/icon_038_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ACCOUNT_WHITE",
+          "file": "images/icon_039_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_KEY_WHITE",
+          "file": "images/icon_040_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SHIELD_WHITE",
+          "file": "images/icon_041_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SHIELD_CHECK_WHITE",
+          "file": "images/icon_042_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_EYE_WHITE",
+          "file": "images/icon_043_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CHECK_WHITE",
+          "file": "images/icon_044_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CLOSE_WHITE",
+          "file": "images/icon_045_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PLUS_WHITE",
+          "file": "images/icon_046_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_MINUS_WHITE",
+          "file": "images/icon_047_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_STAR_WHITE",
+          "file": "images/icon_048_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_HEART_WHITE",
+          "file": "images/icon_049_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LEAF_WHITE",
+          "file": "images/icon_050_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CAR_WHITE",
+          "file": "images/icon_051_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LIGHT_SWITCH_WHITE",
+          "file": "images/icon_052_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_POWER_PLUG_WHITE",
+          "file": "images/icon_053_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_REMOTE_WHITE",
+          "file": "images/icon_054_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BLUETOOTH_WHITE",
+          "file": "images/icon_055_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WIFI_WHITE",
+          "file": "images/icon_056_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CLOUD_WHITE",
+          "file": "images/icon_057_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_REFRESH_WHITE",
+          "file": "images/icon_058_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_COG_WHITE",
+          "file": "images/icon_059_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ALERT_WHITE",
+          "file": "images/icon_060_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_INFORMATION_WHITE",
+          "file": "images/icon_061_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_FLASH_WHITE",
+          "file": "images/icon_062_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PIN_WHITE",
+          "file": "images/icon_063_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_MAP_MARKER_WHITE",
+          "file": "images/icon_064_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ROBOT_WHITE",
+          "file": "images/icon_065_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_LAMP_WHITE",
+          "file": "images/icon_066_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WINDOW_CLOSED_WHITE",
+          "file": "images/icon_067_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BLINDS_WHITE",
+          "file": "images/icon_068_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WASHING_MACHINE_WHITE",
+          "file": "images/icon_069_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_FRIDGE_WHITE",
+          "file": "images/icon_070_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_COFFEE_WHITE",
+          "file": "images/icon_071_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_DOORBELL_WHITE",
+          "file": "images/icon_072_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CCTV_WHITE",
+          "file": "images/icon_073_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ALARM_LIGHT_OUTLINE_WHITE",
+          "file": "images/icon_074_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SMOKE_DETECTOR_WHITE",
+          "file": "images/icon_075_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SOLAR_POWER_WHITE",
+          "file": "images/icon_076_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BANK_WHITE",
+          "file": "images/icon_077_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CURRENCY_EUR_WHITE",
+          "file": "images/icon_078_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PIGGY_BANK_WHITE",
+          "file": "images/icon_079_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_GAMEPAD_WHITE",
+          "file": "images/icon_080_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_GAUGE_WHITE",
+          "file": "images/icon_081_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_SUNSET_UP_WHITE",
+          "file": "images/icon_082_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_CLOUDY_WHITE",
+          "file": "images/icon_083_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_RAINY_WHITE",
+          "file": "images/icon_084_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WEATHER_FOG_WHITE",
+          "file": "images/icon_085_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BELL_OFF_WHITE",
+          "file": "images/icon_086_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_SHUFFLE_WHITE",
+          "file": "images/icon_087_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_REPEAT_WHITE",
+          "file": "images/icon_088_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ARROW_UP_WHITE",
+          "file": "images/icon_089_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ARROW_DOWN_WHITE",
+          "file": "images/icon_090_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ROCKET_WHITE",
+          "file": "images/icon_091_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_GARAGE_OPEN_VARIANT_WHITE",
+          "file": "images/icon_092_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_WATCH_WHITE",
+          "file": "images/icon_093_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_PINE_TREE_WHITE",
+          "file": "images/icon_094_w.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ROCKET_GREEN",
+          "file": "images/rocket_green.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_CHECK_GREEN",
+          "file": "images/check_green.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_ALERT_RED",
+          "file": "images/alert_red.png"
         }
       ]
     }
