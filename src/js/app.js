@@ -36,9 +36,12 @@ var fetchGeneration = 0;
 
 // Jinja template for browsing: one line per script entity, fields joined by '|'.
 // entity_id|name|area|labels|icon
+// Labels come from the labels() template function (registry), mapped to
+// display names — state.labels is NOT exposed in HA templates.
 var SCRIPT_BROWSE_TEMPLATE =
   "{% for s in states.script %}{{ s.entity_id }}|{{ s.name }}|" +
-  "{{ area_name(s.entity_id) or '' }}|{{ s.labels | join(',') }}|" +
+  "{{ area_name(s.entity_id) or '' }}|" +
+  "{{ labels(s.entity_id) | map('label_name') | join(',') }}|" +
   "{{ s.attributes.icon or '' }}\n{% endfor %}";
 
 /**
