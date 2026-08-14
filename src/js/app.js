@@ -34,6 +34,11 @@ var clay = new Clay(clayConfig);
 // is dropped instead of interleaving with the newer one.
 var fetchGeneration = 0;
 
+// Executable script service names from the HA service registry
+// ({key: true}); null when unknown (registry fetch failed -> entity-only
+// listing). Entities without a matching service can never be executed.
+var s_script_services = null;
+
 // Jinja template for browsing: one line per script entity, fields joined by '|'.
 // entity_id|name|area|labels|icon
 // Labels come from the labels() template function (registry), mapped to
@@ -452,6 +457,66 @@ function fetchScripts() {
 
   var generation = ++fetchGeneration;
 
+  // The service registry decides what can actually be executed. An entity
+  // without a matching script service (e.g. an entity-id override left over
+  // from a rename) always answers 400, so fetch the registry first and drop
+  // those entries from the browse list instead of offering dead shortcuts.
+  // A failed registry fetch degrades to the entity-only listing.
+  var servicesXhr = new XMLHttpRequest();
+  servicesXhr.open('GET', config.baseUrl + '/api/services', true);
+  servicesXhr.setRequestHeader('Authorization', 'Bearer ' + config.token);
+  servicesXhr.timeout = BROWSE_TIMEOUT_MS;
+  servicesXhr.onload = function() {
+    if (generation !== fetchGeneration) {
+      return; // stale: a newer browse superseded this one
+    }
+    s_script_services = null;
+    if (servicesXhr.status === 200) {
+      try {
+        var domains = JSON.parse(servicesXhr.responseText);
+        var scriptDomain = null;
+        for (var d = 0; d < domains.length; d++) {
+          if (domains[d].domain === 'script') {
+            scriptDomain = domains[d].services;
+            break;
+          }
+        }
+        if (scriptDomain) {
+          var keys = {};
+          var name;
+          for (name in scriptDomain) {
+            // The script domain's generic services are not script keys.
+            if (name !== 'reload' && name !== 'turn_on' && name !== 'turn_off' && name !== 'toggle') {
+              keys[name] = true;
+            }
+          }
+          s_script_services = keys;
+          console.log('fetchScripts: ' + Object.keys(keys).length + ' executable script service(s)');
+        }
+      } catch (e) {
+        console.log('fetchScripts: bad services response: ' + e);
+      }
+    } else {
+      console.log('fetchScripts: services fetch failed (' + servicesXhr.status + '), entity-only list');
+    }
+    startBrowseFetch(config, generation);
+  };
+  servicesXhr.onerror = function() {
+    if (generation === fetchGeneration) {
+      s_script_services = null;
+      startBrowseFetch(config, generation);
+    }
+  };
+  servicesXhr.ontimeout = function() {
+    if (generation === fetchGeneration) {
+      s_script_services = null;
+      startBrowseFetch(config, generation);
+    }
+  };
+  servicesXhr.send();
+}
+
+function startBrowseFetch(config, generation) {
   var xhr = new XMLHttpRequest();
   xhr.open('POST', config.baseUrl + '/api/template', true);
   xhr.setRequestHeader('Authorization', 'Bearer ' + config.token);
@@ -508,6 +573,13 @@ function handleBrowseResponse(responseText, generation) {
       continue;
     }
     var key = entityId.slice('script.'.length);
+    if (s_script_services && !s_script_services[key]) {
+      // The entity exists but no matching script service (entity-id
+      // override left over from a rename): HA answers 400 on every run.
+      // Drop it from the list; stored copies surface as 'missing'.
+      console.log('browse: skipping script without service: ' + key);
+      continue;
+    }
     var name = parts[1] || key;
     // Scripts without an icon attribute default to HA's script glyph
     // (mdi:script-text); the category line shows the bare mdi name.
