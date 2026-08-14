@@ -38,8 +38,10 @@ var fetchGeneration = 0;
 // entity_id|name|area|labels|icon
 // Labels come from the labels() template function (registry), mapped to
 // display names — state.labels is NOT exposed in HA templates.
+// 'unavailable' entities are deleted/restored ghosts: never list them, so
+// they can never be executed (HA returns 400 for the missing service).
 var SCRIPT_BROWSE_TEMPLATE =
-  "{% for s in states.script %}{{ s.entity_id }}|{{ s.name }}|" +
+  "{% for s in states.script if s.state != 'unavailable' %}{{ s.entity_id }}|{{ s.name }}|" +
   "{{ area_name(s.entity_id) or '' }}|" +
   "{{ labels(s.entity_id) | map('label_name') | join(',') }}|" +
   "{{ s.attributes.icon or '' }}\n{% endfor %}";

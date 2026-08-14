@@ -508,6 +508,10 @@ static void dialog_dismiss_cb(void *data);
 static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
   if (!s_dialog_confirm) return;
   s_dialog_confirm = false;
+  // The confirm screen is only an intermediate step: dismiss it and run
+  // the standard execute flow so the main menu shows the exec overlay
+  // exactly as when executing without confirmation.
+  dialog_dismiss_cb(NULL);
   start_execute(s_confirm_ctx.key);
 }
 
