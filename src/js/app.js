@@ -155,9 +155,158 @@ for (var i = 0; i < MDI_ICONS.length; i++) {
 }
 
 /**
+ * Keyword clustering: one representative glyph per concept. Every mdi
+ * variant of a family (garage-*, lightbulb-*, bed-*, ...) renders the same
+ * normal representation, so 96 shipped glyphs cover most of mdi that HA
+ * entities actually use. Auto-derived from the curated names' base tokens,
+ * then overridden/extended with hand-picked concept aliases that map to an
+ * existing glyph. Unmatched names fall back to the generic script-text.
+ */
+var MDI_KEYWORDS = {};
+(function () {
+  var i, toks, base;
+  for (i = 0; i < MDI_ICONS.length; i++) {
+    toks = MDI_ICONS[i].split('-');
+    base = toks[0];
+    if (base.length >= 3 && !(base in MDI_KEYWORDS)) {
+      MDI_KEYWORDS[base] = MDI_ICONS[i];
+    }
+  }
+  var aliases = {
+    // rooms & furniture
+    'house': 'home', 'bed': 'home', 'sofa': 'home', 'couch': 'home',
+    'wardrobe': 'home', 'dresser': 'home', 'furniture': 'home',
+    // lighting
+    'light': 'lightbulb', 'bulb': 'lightbulb',
+    'ceiling': 'lamp', 'candle': 'lamp', 'lantern': 'lamp', 'torch': 'lamp',
+    'flashlight': 'lamp', 'switch': 'light-switch', 'dimmer': 'light-switch',
+    'toggle': 'light-switch', 'relay': 'light-switch',
+    // climate & appliances
+    'temperature': 'thermometer', 'thermostat': 'thermometer',
+    'heat': 'thermometer', 'cool': 'thermometer',
+    'wind': 'fan', 'hvac': 'fan',
+    'heater': 'radiator', 'oven': 'radiator', 'cooker': 'radiator',
+    'stove': 'radiator', 'microwave': 'radiator', 'toaster': 'radiator',
+    'kettle': 'radiator', 'dishwasher': 'radiator', 'dryer': 'radiator',
+    'iron': 'radiator', 'laundry': 'radiator',
+    // water & fire
+    'drop': 'water', 'pool': 'water', 'shower': 'water', 'faucet': 'water',
+    'sprinkler': 'water', 'pump': 'water', 'boiler': 'water', 'flood': 'water',
+    'wave': 'water',
+    'flame': 'fire', 'smoke': 'fire', 'gas': 'fire', 'campfire': 'fire',
+    'bonfire': 'fire',
+    // security & access
+    'security': 'lock', 'safe': 'lock', 'vault': 'lock', 'fingerprint': 'lock',
+    'protect': 'shield', 'guard': 'shield', 'defense': 'shield',
+    'password': 'key', 'card': 'key', 'badge': 'key', 'tag': 'key',
+    // media & communication
+    'volume': 'volume-high', 'sound': 'volume-high', 'audio': 'volume-high',
+    'radio': 'music-note', 'podcast': 'music-note', 'album': 'music-note',
+    'headphones': 'music-note',
+    'monitor': 'television', 'display': 'television', 'screen': 'television',
+    'smartphone': 'phone', 'cellphone': 'phone', 'telephone': 'phone',
+    'iphone': 'phone',
+    'chat': 'message', 'comment': 'message', 'conversation': 'message',
+    'forum': 'message', 'whatsapp': 'message', 'telegram': 'message',
+    'sms': 'message',
+    'mail': 'email', 'gmail': 'email', 'inbox': 'email', 'outlook': 'email',
+    'access-point': 'wifi', 'network': 'wifi', 'router': 'wifi',
+    'ethernet': 'wifi',
+    'gamepad': 'remote', 'controller': 'remote',
+    'record': 'stop', 'fast-forward': 'play', 'skip': 'play', 'next': 'play',
+    'rewind': 'pause', 'previous': 'pause',
+    // notifications & time
+    'notify': 'bell', 'notification': 'bell', 'ring': 'bell',
+    'siren': 'alarm', 'emergency': 'alert',
+    'hourglass': 'timer',
+    'schedule': 'calendar', 'event': 'calendar', 'agenda': 'calendar',
+    'today': 'calendar', 'month': 'calendar',
+    // people
+    'person': 'account', 'user': 'account', 'human': 'account',
+    'face': 'account', 'man': 'account', 'woman': 'account', 'boy': 'account',
+    'girl': 'account', 'child': 'account', 'family': 'account',
+    'group': 'account', 'team': 'account', 'contact': 'account',
+    'avatar': 'account', 'profile': 'account',
+    // power & energy
+    'battery': 'power', 'charge': 'power', 'energy': 'power',
+    'electricity': 'power',
+    'plug': 'power-plug', 'socket': 'power-plug',
+    'lightning': 'flash', 'bolt': 'flash',
+    // sensors, cameras
+    'motion': 'motion-sensor', 'sensor': 'motion-sensor',
+    'presence': 'motion-sensor', 'occupancy': 'motion-sensor',
+    'detector': 'motion-sensor', 'proximity': 'motion-sensor',
+    'webcam': 'camera', 'camcorder': 'camera',
+    'movie': 'video', 'film': 'video', 'cinema': 'video',
+    'photo': 'camera', 'image': 'camera', 'picture': 'camera',
+    'screenshot': 'camera', 'qr': 'camera', 'barcode': 'camera',
+    'scan': 'camera',
+    // doors, windows, garage, vehicles
+    'gate': 'door', 'fence': 'door', 'entry': 'door', 'entrance': 'door',
+    'exit': 'door', 'doorway': 'door',
+    'curtain': 'blinds', 'blind': 'blinds', 'shade': 'blinds',
+    'awning': 'blinds', 'shutter': 'blinds', 'roller': 'blinds',
+    'venetian': 'blinds', 'drapery': 'blinds',
+    'vehicle': 'car', 'automobile': 'car', 'parking': 'car',
+    'transport': 'car', 'taxi': 'car', 'truck': 'car', 'van': 'car',
+    'bus': 'car', 'train': 'car', 'bicycle': 'car', 'bike': 'car',
+    'scooter': 'car', 'motorbike': 'car', 'tractor': 'car',
+    // status & ui
+    'done': 'check', 'success': 'check', 'verified': 'check', 'ok': 'check',
+    'yes': 'check', 'complete': 'check',
+    'cancel': 'close', 'delete': 'close', 'trash': 'close', 'ban': 'close',
+    'clear': 'close',
+    'add': 'plus', 'new': 'plus', 'create': 'plus', 'increase': 'plus',
+    'more': 'plus', 'expand': 'plus',
+    'settings': 'cog', 'gear': 'cog', 'configuration': 'cog', 'tune': 'cog',
+    'sliders': 'cog', 'equalizer': 'cog', 'automation': 'cog',
+    'sync': 'refresh', 'reload': 'refresh', 'rotate': 'refresh',
+    'loop': 'refresh', 'restart': 'refresh', 'update': 'refresh',
+    'download': 'refresh', 'upload': 'refresh',
+    'view': 'eye', 'visibility': 'eye',
+    'info': 'information', 'help': 'information', 'question': 'information',
+    'hint': 'information', 'about': 'information', 'details': 'information',
+    'warning': 'alert', 'error': 'alert', 'danger': 'alert',
+    'exclamation': 'alert', 'attention': 'alert', 'critical': 'alert',
+    'issue': 'alert', 'problem': 'alert', 'broken': 'alert',
+    // weather
+    'sun': 'weather-sunny', 'sunny': 'weather-sunny',
+    'sunset': 'weather-sunny', 'sunrise': 'weather-sunny', 'day': 'weather-sunny',
+    'morning': 'weather-sunny',
+    'moon': 'weather-night', 'stars': 'weather-night', 'midnight': 'weather-night',
+    'night': 'weather-night', 'sleep': 'weather-night',
+    'cloudy': 'weather-cloudy', 'rain': 'weather-rainy', 'pouring': 'weather-rainy',
+    'storm': 'weather-rainy', 'fog': 'weather-fog', 'haze': 'weather-fog',
+    'humid': 'water', 'humidifier': 'water', 'dehumidifier': 'water',
+    'valve': 'water', 'climate': 'thermometer', 'cover': 'blinds',
+    // locations
+    'location': 'map-marker', 'place': 'map-marker', 'gps': 'map-marker',
+    'position': 'map-marker', 'destination': 'map-marker', 'marker': 'map-marker',
+    'map': 'map-marker',
+    // home & appliances
+    'cleaner': 'robot', 'vacuum': 'robot', 'mop': 'robot', 'broom': 'robot',
+    'sweep': 'robot',
+    'plant': 'leaf', 'flower': 'leaf', 'tree': 'pine-tree', 'grass': 'leaf',
+    'sprout': 'leaf', 'nature': 'leaf', 'eco': 'leaf', 'garden': 'leaf',
+    'pot': 'leaf',
+    'launch': 'rocket', 'send': 'rocket', 'export': 'rocket',
+    'smartwatch': 'watch',
+    'bottle': 'baby-bottle', 'feeding': 'baby-bottle', 'milk': 'baby-bottle'
+  };
+  var k;
+  for (k in aliases) {
+    if (aliases[k] in MDI_ICON_INDEX) {
+      MDI_KEYWORDS[k] = aliases[k];
+    }
+  }
+})();
+
+/**
  * Map a Home Assistant mdi icon name to a curated icon resource index.
- * Strips the 'mdi:' prefix, lowercases and normalizes separators; unknown or
- * empty names map to 0 (generic).
+ * Strips the 'mdi:' prefix and lowercases; exact matches win, then the
+ * longest keyword token of the name (ties go to the earliest) picks the
+ * representative glyph of its concept family; unknown or empty names map
+ * to 0 (generic).
  * @param {string} mdiName
  * @return {number}
  */
@@ -167,6 +316,24 @@ function mdiToIndex(mdiName) {
   }
   var name = String(mdiName).replace(/^mdi:/, '').toLowerCase();
   var idx = MDI_ICON_INDEX[name];
+  if (typeof idx === 'number') {
+    return idx;
+  }
+  var toks = name.split('-');
+  var best = null, bestLen = 0, bestPos = toks.length;
+  for (var i = 0; i < toks.length; i++) {
+    var t = toks[i];
+    if (t.length < 3) {
+      continue; // skip 1-2 char noise tokens (on, off, ac, tv, ...)
+    }
+    var mapped = MDI_KEYWORDS[t];
+    if (mapped && (t.length > bestLen || (t.length === bestLen && i < bestPos))) {
+      best = mapped;
+      bestLen = t.length;
+      bestPos = i;
+    }
+  }
+  idx = best ? MDI_ICON_INDEX[best] : undefined;
   return (typeof idx === 'number') ? idx : 0;
 }
 
