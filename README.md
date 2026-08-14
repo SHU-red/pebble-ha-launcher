@@ -37,8 +37,9 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    script row shows its state — grey `OFF` (not in the launcher), green `ON`
    (runs directly), orange `CONFIRM` (asks before running). Press Select to
    cycle the state, then run the picked scripts from the main list. The 3-dot
-   entry row also holds Change Order, Update metadata and the on-watch
-   Settings (Automatic close).
+   entry row also holds Change Order, Update metadata and Automatic close
+   (SELECT cycles Never/3s/5s/10s/15s/30s). Missing scripts stay listed in
+   the picker with a red `!` so you can turn them off.
 
 ## Build
 

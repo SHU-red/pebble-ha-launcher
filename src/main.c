@@ -710,6 +710,7 @@ typedef struct {
   uint8_t icon_idx;
   char icon_name[40];
   uint8_t cycle;  // 0 = OFF, 1 = ON, 2 = CONFIRM (transient, from confirm flag)
+  uint8_t missing; // 1 = script no longer exists in Home Assistant
 } ScriptEntry;
 
 static ScriptEntry s_scripts[MAX_SHORTCUTS];
@@ -724,6 +725,7 @@ static TextLayer *s_edit_status;
 static bool s_edit_visible;
 
 static void edit_render(void);
+static void edit_fetch_done(void);
 static void metadata_apply(void);
 static bool s_edit_update_mode;
 
@@ -785,14 +787,15 @@ static void edit_collect_script(DictionaryIterator *iter) {
     if (s_edit_update_mode) {
       metadata_apply();
     } else {
-      edit_render();
+      edit_fetch_done();
     }
   }
 }
 
-//! Update-only pass: refresh names/areas/icons from the fetched list, mark
-//! scripts that no longer exist as missing. Never adds/removes/reorders.
-static void metadata_apply(void) {
+//! Refresh stored shortcut metadata from the fetched list: names, areas,
+//! labels, icon names, icons. Scripts absent from the fetch are marked
+//! missing. Never adds/removes/reorders. Persists. Returns updated count.
+static uint16_t refresh_shortcut_metadata(void) {
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
     s_shortcuts[i].missing = 1;
   }
@@ -812,7 +815,12 @@ static void metadata_apply(void) {
     }
   }
   persist_save();
+  return updated;
+}
 
+//! Update-only pass (sub-menu "Update metadata"): refresh + result dialog.
+static void metadata_apply(void) {
+  uint16_t updated = refresh_shortcut_metadata();
   uint16_t missing = 0;
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
     if (s_shortcuts[i].missing) {
@@ -853,26 +861,45 @@ static void edit_render(void) {
   if (!s_edit_window) {
     return;
   }
-  edit_hide_status();
-  // The edit screen contacted HA anyway: refresh the stored shortcut icons
-  // and metadata (labels, category) so the main list stays in sync.
-  bool changed = false;
-  for (uint16_t i = 0; i < s_script_count; i++) {
-    int32_t idx = shortcut_index_for_key(s_scripts[i].key);
-    if (idx >= 0 &&
-        (s_scripts[i].icon_idx != s_shortcuts[idx].icon_idx ||
-         strcmp(s_scripts[i].labels, s_shortcuts[idx].labels) != 0 ||
-         strcmp(s_scripts[i].icon_name, s_shortcuts[idx].icon_name) != 0)) {
-      s_shortcuts[idx].icon_idx = s_scripts[i].icon_idx;
-      snprintf(s_shortcuts[idx].labels, sizeof(s_shortcuts[idx].labels), "%s",
-               s_scripts[i].labels);
-      snprintf(s_shortcuts[idx].icon_name, sizeof(s_shortcuts[idx].icon_name), "%s",
-               s_scripts[i].icon_name);
-      changed = true;
-    }
+  menu_layer_reload_data(s_edit_menu);
+}
+
+//! The picker fetch completed: refresh the stored shortcut metadata (same as
+//! "Update metadata") and append shortcuts that no longer exist in HA, marked
+//! missing, so the user can still see them and turn them off like any other.
+static void edit_fetch_done(void) {
+  if (!s_edit_window) {
+    return;
   }
-  if (changed) {
-    persist_save();
+  edit_hide_status();
+  refresh_shortcut_metadata();
+
+  for (uint16_t i = 0; i < s_shortcut_count; i++) {
+    if (!s_shortcuts[i].missing) {
+      continue;
+    }
+    bool present = false;
+    for (uint16_t j = 0; j < s_script_count; j++) {
+      if (strcmp(s_scripts[j].key, s_shortcuts[i].key) == 0) {
+        present = true;
+        break;
+      }
+    }
+    if (present || s_script_count >= MAX_SHORTCUTS) {
+      continue;
+    }
+    ScriptEntry e;
+    memset(&e, 0, sizeof(e));
+    snprintf(e.key, sizeof(e.key), "%s", s_shortcuts[i].key);
+    snprintf(e.name, sizeof(e.name), "%s",
+             s_shortcuts[i].name[0] ? s_shortcuts[i].name : s_shortcuts[i].key);
+    snprintf(e.area, sizeof(e.area), "%s", s_shortcuts[i].area);
+    snprintf(e.labels, sizeof(e.labels), "%s", s_shortcuts[i].labels);
+    snprintf(e.icon_name, sizeof(e.icon_name), "%s", s_shortcuts[i].icon_name);
+    e.icon_idx = s_shortcuts[i].icon_idx;
+    e.cycle = s_shortcuts[i].confirm ? 2 : 1; // still picked: show its stored mode
+    e.missing = 1;
+    s_scripts[s_script_count++] = e;
   }
   menu_layer_reload_data(s_edit_menu);
 }
@@ -929,7 +956,7 @@ static void pick_script(uint16_t row, uint8_t confirm) {
   snprintf(sc->labels, sizeof(sc->labels), "%s", e->labels);
   snprintf(sc->icon_name, sizeof(sc->icon_name), "%s", e->icon_name);
   sc->icon_idx = e->icon_idx;
-  sc->missing = 0;
+  sc->missing = e->missing;
   sc->confirm = confirm;
   persist_save();
   edit_render();
@@ -1062,6 +1089,16 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                      fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                      GRect(margin + 36, 8, bounds.size.w - margin - 42, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  // Missing-upstream badge: red circle with '!', like the main screen.
+  if (e->missing) {
+    graphics_context_set_fill_color(ctx, GColorRed);
+    graphics_fill_circle(ctx, GPoint(bounds.size.w - 16, 16), 8);
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(bounds.size.w - 24, 8, 16, 16),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+  }
 
   // Whole-width state bar at the select-button level; the color cross-fades
   // on toggle. New row: snap to its static state color, no animation.
@@ -1244,7 +1281,6 @@ static void push_update_window(void) {
 
 static void push_submenu_window(void);
 static void push_reorder_window(void);
-static void push_settings_window(void);
 
 // ---------------------------------------------------------------------------
 // Sub-menu (Shortcuts / Change order) + reorder mode
@@ -1261,6 +1297,9 @@ static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
   return 4;
 }
 
+static const char *autoclose_label(int32_t seconds);
+static void autoclose_cycle(void);
+
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                          void *callback_context) {
   if (cell_index->row == 0) {
@@ -1273,8 +1312,9 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
                          "Refresh names, icons and labels from Home Assistant", NULL);
   } else {
-    menu_cell_basic_draw(ctx, cell_layer, "Settings",
-                         "Automatic close, on the watch", NULL);
+    char sub[48];
+    snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
+    menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
   }
 }
 
@@ -1286,7 +1326,7 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
   } else if (cell_index->row == 2) {
     push_update_window();
   } else {
-    push_settings_window();
+    autoclose_cycle();
   }
 }
 
@@ -1324,11 +1364,9 @@ static void push_submenu_window(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Settings (on-watch): Automatic close cycles through the options on SELECT.
+// Automatic close: cycles through the options on SELECT, directly in the
+// sub-menu (no extra settings screen).
 // ---------------------------------------------------------------------------
-
-static Window *s_settings_window;
-static MenuLayer *s_settings_menu;
 
 static const int32_t AUTOCLOSE_OPTIONS[] = { 0, 3, 5, 10, 15, 30 };
 #define AUTOCLOSE_OPTION_COUNT ((int32_t)(sizeof(AUTOCLOSE_OPTIONS) / sizeof(AUTOCLOSE_OPTIONS[0])))
@@ -1344,26 +1382,7 @@ static const char *autoclose_label(int32_t seconds) {
   }
 }
 
-static uint16_t settings_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
-                                      void *callback_context) {
-  return 1;
-}
-
-static void settings_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
-                              void *callback_context) {
-  if (cell_index->row != 0) {
-    return;
-  }
-  char sub[48];
-  snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
-  menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
-}
-
-static void settings_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index,
-                               void *callback_context) {
-  if (cell_index->row != 0) {
-    return;
-  }
+static void autoclose_cycle(void) {
   int32_t idx = 0;
   for (int32_t i = 0; i < AUTOCLOSE_OPTION_COUNT; i++) {
     if (AUTOCLOSE_OPTIONS[i] == s_autoclose_seconds) {
@@ -1374,40 +1393,7 @@ static void settings_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index,
   s_autoclose_seconds = AUTOCLOSE_OPTIONS[idx];
   persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
   vibes_short_pulse();
-  menu_layer_reload_data(s_settings_menu);
-}
-
-static void settings_window_load(Window *window) {
-  Layer *root = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(root);
-  window_set_background_color(window, theme_bg());
-  s_settings_menu = menu_layer_create(bounds);
-  menu_layer_set_callbacks(s_settings_menu, NULL, (MenuLayerCallbacks){
-    .get_num_rows = settings_get_num_rows,
-    .draw_row = settings_draw_row,
-    .select_click = settings_select_cb,
-  });
-  menu_layer_set_click_config_onto_window(s_settings_menu, window);
-  menu_layer_pad_bottom_enable(s_settings_menu, true);
-  menu_layer_set_normal_colors(s_settings_menu, theme_bg(), theme_fg());
-  menu_layer_set_highlight_colors(s_settings_menu, s_accent, GColorBlack);
-  layer_add_child(root, menu_layer_get_layer(s_settings_menu));
-}
-
-static void settings_window_unload(Window *window) {
-  menu_layer_destroy(s_settings_menu);
-  s_settings_menu = NULL;
-  window_destroy(s_settings_window);
-  s_settings_window = NULL;
-}
-
-static void push_settings_window(void) {
-  s_settings_window = window_create();
-  window_set_window_handlers(s_settings_window, (WindowHandlers){
-    .load = settings_window_load,
-    .unload = settings_window_unload,
-  });
-  window_stack_push(s_settings_window, true);
+  menu_layer_reload_data(s_sub_menu);
 }
 
 // ---- reorder mode ----
@@ -1873,7 +1859,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   if ((t = dict_find(iter, MESSAGE_KEY_ShortcutCount))) {
     edit_begin_collect(t->value->int32);
     if (s_edit_visible && s_script_expected == 0) {
-      edit_render();
+      edit_fetch_done();
     }
     return;
   }
