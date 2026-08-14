@@ -33,7 +33,7 @@
 
 #define ICON_PLUS_IDX 46             // index of ICON_PLUS in the icon table
 #define ICON_ROCKET_IDX 91          // index of ICON_ROCKET in the icon table
-#define ICON_ALERT_IDX 61           // index of ICON_ALERT in the icon table
+#define ICON_ALERT_IDX 60           // index of ICON_ALERT in the icon table
 #define ICON_CHECK_IDX 44           // index of ICON_CHECK in the icon table
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,9 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_ARROW_UP,
   RESOURCE_ID_ICON_ARROW_DOWN,
   RESOURCE_ID_ICON_ROCKET,
+  RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT,
+  RESOURCE_ID_ICON_WATCH,
+  RESOURCE_ID_ICON_PINE_TREE,
 };
 
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
@@ -574,9 +577,9 @@ static void edit_commit_pending(void) {
     memset(&s_pending, 0, sizeof(s_pending));
     return;
   }
-  // Picked scripts show ON (approval) or CONFIRM (direct); others OFF.
+  // Picked scripts show ON (runs directly) or CONFIRM (asks first); others OFF.
   int32_t idx = shortcut_index_for_key(s_pending.key);
-  s_pending.cycle = (idx >= 0) ? (s_shortcuts[idx].confirm ? 1 : 2) : 0;
+  s_pending.cycle = (idx >= 0) ? (s_shortcuts[idx].confirm ? 2 : 1) : 0;
   s_scripts[s_script_count++] = s_pending;
   memset(&s_pending, 0, sizeof(s_pending));
   s_pending_active = false;
@@ -754,22 +757,85 @@ static int16_t edit_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index
   return layer_get_bounds(menu_layer_get_layer(menu_layer)).size.h;
 }
 
+// ---------------------------------------------------------------------------
+// State bar: full-width color band at the select-button level. The state
+// transition is cross-faded with the firmware's native Animation API
+// (property_animation has no color property, so the 2-bit channels of the
+// GColor8 palette are interpolated per frame — cheap, no float math).
+// ---------------------------------------------------------------------------
+
+static GColor cycle_color(uint8_t cycle) {
+  return (cycle == 1) ? GColorGreen : (cycle == 2) ? GColorOrange : GColorDarkGray;
+}
+
+static GColor s_bar_color;   // currently drawn bar color
+static uint16_t s_bar_row = 0xFFFF; // row it belongs to (cells are full-screen)
+static Animation *s_bar_anim;
+static GColor s_bar_from;
+static GColor s_bar_to;
+
+static GColor bar_color_lerp(GColor from, GColor to, uint32_t num, uint32_t den) {
+  uint8_t fr = (from.argb >> 4) & 0x3, fg = (from.argb >> 2) & 0x3, fb = from.argb & 0x3;
+  uint8_t tr = (to.argb >> 4) & 0x3, tg = (to.argb >> 2) & 0x3, tb = to.argb & 0x3;
+  uint8_t r = (uint8_t)((fr * (den - num) + tr * num + den / 2) / den);
+  uint8_t g = (uint8_t)((fg * (den - num) + tg * num + den / 2) / den);
+  uint8_t b = (uint8_t)((fb * (den - num) + tb * num + den / 2) / den);
+  return (GColor){ .argb = (uint8_t)(0xC0 | (r << 4) | (g << 2) | b) };
+}
+
+static void bar_anim_update(Animation *anim, const AnimationProgress progress) {
+  s_bar_color = bar_color_lerp(s_bar_from, s_bar_to, progress, ANIMATION_NORMALIZED_MAX);
+  layer_mark_dirty(menu_layer_get_layer(s_edit_menu));
+}
+
+static void bar_anim_stopped(Animation *anim, bool finished, void *context) {
+  if (anim != s_bar_anim) {
+    return; // superseded by a newer animation
+  }
+  s_bar_anim = NULL; // completed animations are freed by the system
+  s_bar_color = s_bar_to;
+  layer_mark_dirty(menu_layer_get_layer(s_edit_menu));
+}
+
+static const AnimationImplementation BAR_ANIM_IMPL = {
+  .update = bar_anim_update,
+};
+
+static void bar_animate_to(GColor to) {
+  if (s_bar_anim) {
+    Animation *old = s_bar_anim;
+    s_bar_anim = NULL; // the unscheduled old animation must not win
+    animation_unschedule(old);
+  }
+  s_bar_from = s_bar_color;
+  s_bar_to = to;
+  s_bar_anim = animation_create();
+  animation_set_duration(s_bar_anim, 220);
+  animation_set_curve(s_bar_anim, AnimationCurveEaseInOut);
+  animation_set_implementation(s_bar_anim, &BAR_ANIM_IMPL);
+  animation_set_handlers(s_bar_anim, (AnimationHandlers){
+    .stopped = bar_anim_stopped,
+  }, NULL);
+  animation_schedule(s_bar_anim);
+}
+
 //! Full-screen picker card in the style of the native Pebble notification
-//! page: white body, colored top banner (36px) with the script icon centered
-//! in it, black text below. Data from HA: name, area, tags/labels, category
-//! (the script's mdi icon name) and the entity key as the footer.
+//! page: white body, colored top banner (36px) with the script icon in it,
+//! black info text. A full-width color band at the select-button level shows
+//! the OFF/ON/CONFIRM state (grey/green/orange) and toggles on SELECT.
+//! Above the bar: area, tags. Below: category (the script's mdi icon name),
+//! and the entity key as the footer.
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
   GRect bounds = layer_get_bounds(cell_layer);
   const int16_t banner_h = 36;
   const int16_t margin = 10;
+  const int16_t bar_h = 34;
+  const int16_t center = bounds.size.h / 2; // physical select-button level
 
-  // Whole row colorized by the OFF/ON/CONFIRM state: grey, green, orange.
-  GColor state_col = (e->cycle == 1) ? GColorGreen
-                     : (e->cycle == 2) ? GColorOrange
-                                       : GColorDarkGray;
-  graphics_context_set_fill_color(ctx, state_col);
+  // White notification-style page.
+  graphics_context_set_fill_color(ctx, GColorWhite);
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
   // Accent banner: icon far left, script name right after it.
@@ -787,42 +853,42 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                      GRect(margin + 36, 8, bounds.size.w - margin - 42, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
-  // State text, centered on the select-button height.
+  // Whole-width state bar at the select-button level; the color cross-fades
+  // on toggle. New row: snap to its static state color, no animation.
+  if (s_bar_row != cell_index->row) {
+    s_bar_row = cell_index->row;
+    s_bar_color = cycle_color(e->cycle);
+  }
+  GRect bar = GRect(0, center - bar_h / 2, bounds.size.w, bar_h);
+  graphics_context_set_fill_color(ctx, s_bar_color);
+  graphics_fill_rect(ctx, bar, 0, GCornerNone);
   const char *st = (e->cycle == 1) ? "ON" : (e->cycle == 2) ? "CONFIRM" : "OFF";
   graphics_context_set_text_color(ctx, GColorWhite);
   graphics_draw_text(ctx, st, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(margin, bounds.size.h / 2 - 14, bounds.size.w - 2 * margin - 56, 28),
+                     GRect(0, center - 14, bounds.size.w, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-  // State pill on the right border at the same height, like the native
-  // notification action indicator - the state text instead of an icon.
-  int16_t pcx = bounds.size.w - 14;
-  int16_t pcy = bounds.size.h / 2;
-  graphics_context_set_fill_color(ctx, GColorWhite);
-  graphics_fill_circle(ctx, GPoint(pcx, pcy), 18);
-  graphics_context_set_text_color(ctx, state_col);
-  graphics_draw_text(ctx, st, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(pcx - 17, pcy - 10, 34, 20),
-                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
-
-  // White info: area above the state, tags/category below, key footer.
+  // Info above the bar: area, then tags (max two lines before the bar).
   int16_t w = bounds.size.w - 2 * margin;
-  graphics_context_set_text_color(ctx, GColorWhite);
   char row[128];
+  int16_t y = banner_h + 6;
+  graphics_context_set_text_color(ctx, GColorBlack);
   if (e->area[0]) {
     snprintf(row, sizeof(row), "Area: %s", e->area);
-    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin, 42, w, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  }
-  int16_t y = bounds.size.h / 2 + 20;
-  if (e->labels[0]) {
-    snprintf(row, sizeof(row), "Tags: %s", e->labels);
     graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
                        GRect(margin, y, w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
     y += 24;
   }
+  if (e->labels[0]) {
+    snprintf(row, sizeof(row), "Tags: %s", e->labels);
+    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(margin, y, w, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
+
+  // Info below the bar: category (script's mdi icon name).
+  y = center + bar_h / 2 + 6;
   if (e->icon_name[0]) {
     snprintf(row, sizeof(row), "Category: %s", e->icon_name);
     graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
@@ -831,7 +897,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   }
 
   // Footer: entity key (like the notification timestamp line).
-  graphics_context_set_text_color(ctx, GColorLightGray);
+  graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin, bounds.size.h - 22, w, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -850,15 +916,7 @@ static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
         unpick_script(cell_index->row);
       }
       break;
-    case 1:  // ON: picked, approval required
-      if (idx >= 0) {
-        s_shortcuts[idx].confirm = 1;
-        persist_save();
-      } else {
-        pick_script(cell_index->row, 1);
-      }
-      break;
-    default: // CONFIRM: picked, runs directly
+    case 1:  // ON: picked, runs directly
       if (idx >= 0) {
         s_shortcuts[idx].confirm = 0;
         persist_save();
@@ -866,7 +924,16 @@ static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
         pick_script(cell_index->row, 0);
       }
       break;
+    default: // CONFIRM: picked, asks before running
+      if (idx >= 0) {
+        s_shortcuts[idx].confirm = 1;
+        persist_save();
+      } else {
+        pick_script(cell_index->row, 1);
+      }
+      break;
   }
+  bar_animate_to(cycle_color(e->cycle));
   menu_layer_reload_data(s_edit_menu);
 }
 
@@ -905,6 +972,12 @@ static void edit_window_load(Window *window) {
 }
 
 static void edit_window_unload(Window *window) {
+  if (s_bar_anim) {
+    Animation *a = s_bar_anim;
+    s_bar_anim = NULL; // stopped handler sees the mismatch and bails
+    animation_unschedule(a);
+  }
+  s_bar_row = 0xFFFF;
   menu_layer_destroy(s_edit_menu);
   text_layer_destroy(s_edit_status);
   s_edit_menu = NULL;

@@ -137,7 +137,10 @@ var MDI_ICONS = [
   'repeat',             // 88
   'arrow-up',           // 89
   'arrow-down',         // 90
-  'rocket'              // 91
+  'rocket',             // 91
+  'garage-open-variant',// 92
+  'watch',              // 93
+  'pine-tree'           // 94
 ];
 
 var MDI_ICON_INDEX = {};
@@ -333,13 +336,16 @@ function handleBrowseResponse(responseText, generation) {
     }
     var key = entityId.slice('script.'.length);
     var name = parts[1] || key;
+    // Scripts without an icon attribute default to HA's script glyph
+    // (mdi:script-text); the category line shows the bare mdi name.
+    var rawIcon = (parts[4] || '').trim();
     scripts.push({
       key: key,
       name: name,
       area: parts[2],
       labels: parts[3],
-      icon: mdiToIndex(parts[4]),
-      iconName: parts[4] || ''
+      icon: mdiToIndex(rawIcon),
+      iconName: rawIcon ? rawIcon.replace(/^mdi:/, '') : 'script-text'
     });
     if (scripts.length >= MAX_SHORTCUTS) {
       break;

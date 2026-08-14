@@ -18,9 +18,8 @@ A modern, touch-first Home Assistant script launcher for Pebble.
    the watch on every start.
 3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
    script row shows its state — grey `OFF` (not in the launcher), green `ON`
-   (runs with a confirmation prompt), orange `CONFIRM` (runs directly).
-   Press Select to cycle the state; then run the picked scripts from the
-   main list.
+   (runs directly), orange `CONFIRM` (asks before running). Press Select to
+   cycle the state; then run the picked scripts from the main list.
 
 ## Build
 
