@@ -15,12 +15,13 @@ A modern, touch-first Home Assistant script launcher for Pebble.
 1. Install the app on your watch.
 2. In the Pebble app -> HA Launcher settings: enter your Home Assistant URL
    (e.g. `http://192.168.178.55:8123`), your long-lived access token, and choose
-   whether every execution should ask for confirmation, plus how long the app
-   stays open after a successful run ("Automatic close": never/3s/5s/10s/15s/30s).
-   The watch flashes
+   whether every execution should ask for confirmation. The watch flashes
    "Settings saved" and stores the config durably in its own flash — the
    phone's storage is only a prefill cache. The app pulls the config back from
    the watch on every start.
+4. On the watch: "Settings" (via the 3-dot entry row) holds the Automatic
+   close option — the app returns to the watchface after Never/3s/5s/10s/15s/30s
+   of idle time on the main screen; SELECT cycles the choices.
 3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
    script row shows its state — grey `OFF` (not in the launcher), green `ON`
    (runs directly), orange `CONFIRM` (asks before running). Press Select to

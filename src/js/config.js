@@ -65,21 +65,6 @@ module.exports = [
         'label': 'Touch',
         'description': 'Off while the native touch layer has bugs (PebbleOS #1865).\nTurn on once the watch firmware update ships.',
         'defaultValue': false
-      },
-      {
-        'type': 'select',
-        'messageKey': 'AutoClose',
-        'label': 'Automatic close',
-        'description': 'Return to the watchface this long after a successful\nexecution. Never keeps the app open.',
-        'options': [
-          { 'label': 'Never', 'value': 0 },
-          { 'label': '3s', 'value': 3 },
-          { 'label': '5s', 'value': 5 },
-          { 'label': '10s', 'value': 10 },
-          { 'label': '15s', 'value': 15 },
-          { 'label': '30s', 'value': 30 }
-        ],
-        'defaultValue': 0
       }
     ]
   },

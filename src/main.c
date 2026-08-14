@@ -452,9 +452,11 @@ static void clear_exec_overlay(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Automatic close: after a successful execution, leave the app (back to the
-// watchface) after the configured delay. Cancelled by any new execution or
-// button press, so it only fires when the user just sits watching.
+// ---------------------------------------------------------------------------
+// Automatic close: an idle timeout on the main screen. Armed when the main
+// window appears and reset on every interaction; when it fires the app
+// returns to the watchface. Never fires while an execution overlay is up or
+// while the user is in any other window (those cancel the timer).
 // ---------------------------------------------------------------------------
 
 static void cancel_autoclose(void) {
@@ -464,8 +466,16 @@ static void cancel_autoclose(void) {
   }
 }
 
+static void cancel_autoclose(void);
+static void arm_autoclose(void);
+
 static void autoclose_cb(void *data) {
   s_autoclose_timer = NULL;
+  if (s_exec_row >= 0 && s_exec_state != EXEC_NONE) {
+    // An execution is still in flight: re-arm instead of closing.
+    arm_autoclose();
+    return;
+  }
   // Pop every window: the watchface reappears, i.e. the app "closes".
   window_stack_pop_all(true);
 }
@@ -1234,6 +1244,7 @@ static void push_update_window(void) {
 
 static void push_submenu_window(void);
 static void push_reorder_window(void);
+static void push_settings_window(void);
 
 // ---------------------------------------------------------------------------
 // Sub-menu (Shortcuts / Change order) + reorder mode
@@ -1247,7 +1258,7 @@ static int32_t s_reorder_held = -1;
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 3;
+  return 4;
 }
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
@@ -1261,6 +1272,9 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   } else if (cell_index->row == 2) {
     menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
                          "Refresh names, icons and labels from Home Assistant", NULL);
+  } else {
+    menu_cell_basic_draw(ctx, cell_layer, "Settings",
+                         "Automatic close, on the watch", NULL);
   }
 }
 
@@ -1269,8 +1283,10 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     push_edit_window();
   } else if (cell_index->row == 1) {
     push_reorder_window();
-  } else {
+  } else if (cell_index->row == 2) {
     push_update_window();
+  } else {
+    push_settings_window();
   }
 }
 
@@ -1305,6 +1321,93 @@ static void push_submenu_window(void) {
     .unload = sub_window_unload,
   });
   window_stack_push(s_sub_window, true);
+}
+
+// ---------------------------------------------------------------------------
+// Settings (on-watch): Automatic close cycles through the options on SELECT.
+// ---------------------------------------------------------------------------
+
+static Window *s_settings_window;
+static MenuLayer *s_settings_menu;
+
+static const int32_t AUTOCLOSE_OPTIONS[] = { 0, 3, 5, 10, 15, 30 };
+#define AUTOCLOSE_OPTION_COUNT ((int32_t)(sizeof(AUTOCLOSE_OPTIONS) / sizeof(AUTOCLOSE_OPTIONS[0])))
+
+static const char *autoclose_label(int32_t seconds) {
+  switch (seconds) {
+    case 3: return "3s";
+    case 5: return "5s";
+    case 10: return "10s";
+    case 15: return "15s";
+    case 30: return "30s";
+    default: return "Never";
+  }
+}
+
+static uint16_t settings_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
+                                      void *callback_context) {
+  return 1;
+}
+
+static void settings_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
+                              void *callback_context) {
+  if (cell_index->row != 0) {
+    return;
+  }
+  char sub[48];
+  snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
+  menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
+}
+
+static void settings_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index,
+                               void *callback_context) {
+  if (cell_index->row != 0) {
+    return;
+  }
+  int32_t idx = 0;
+  for (int32_t i = 0; i < AUTOCLOSE_OPTION_COUNT; i++) {
+    if (AUTOCLOSE_OPTIONS[i] == s_autoclose_seconds) {
+      idx = (i + 1) % AUTOCLOSE_OPTION_COUNT;
+      break;
+    }
+  }
+  s_autoclose_seconds = AUTOCLOSE_OPTIONS[idx];
+  persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
+  vibes_short_pulse();
+  menu_layer_reload_data(s_settings_menu);
+}
+
+static void settings_window_load(Window *window) {
+  Layer *root = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(root);
+  window_set_background_color(window, theme_bg());
+  s_settings_menu = menu_layer_create(bounds);
+  menu_layer_set_callbacks(s_settings_menu, NULL, (MenuLayerCallbacks){
+    .get_num_rows = settings_get_num_rows,
+    .draw_row = settings_draw_row,
+    .select_click = settings_select_cb,
+  });
+  menu_layer_set_click_config_onto_window(s_settings_menu, window);
+  menu_layer_pad_bottom_enable(s_settings_menu, true);
+  menu_layer_set_normal_colors(s_settings_menu, theme_bg(), theme_fg());
+  menu_layer_set_highlight_colors(s_settings_menu, s_accent, GColorBlack);
+  layer_add_child(root, menu_layer_get_layer(s_settings_menu));
+}
+
+static void settings_window_unload(Window *window) {
+  menu_layer_destroy(s_settings_menu);
+  s_settings_menu = NULL;
+  window_destroy(s_settings_window);
+  s_settings_window = NULL;
+}
+
+static void push_settings_window(void) {
+  s_settings_window = window_create();
+  window_set_window_handlers(s_settings_window, (WindowHandlers){
+    .load = settings_window_load,
+    .unload = settings_window_unload,
+  });
+  window_stack_push(s_settings_window, true);
 }
 
 // ---- reorder mode ----
@@ -1651,7 +1754,7 @@ static uint16_t main_total_rows(void) {
 }
 
 static void main_up_click(ClickRecognizerRef rec, void *ctx) {
-  cancel_autoclose(); // any interaction keeps the app open
+  arm_autoclose(); // interaction resets the idle close countdown
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   if (idx.row <= 1) {
     push_submenu_window();  // push upwards on the first entry
@@ -1662,7 +1765,7 @@ static void main_up_click(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void main_down_click(ClickRecognizerRef rec, void *ctx) {
-  cancel_autoclose(); // any interaction keeps the app open
+  arm_autoclose(); // interaction resets the idle close countdown
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   if (idx.row + 1 < main_total_rows()) {
     idx.row++;
@@ -1671,7 +1774,7 @@ static void main_down_click(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void main_select_click(ClickRecognizerRef rec, void *ctx) {
-  cancel_autoclose(); // any interaction keeps the app open
+  arm_autoclose(); // interaction resets the idle close countdown
   MenuIndex idx = menu_layer_get_selected_index(s_main_menu);
   main_select_cb(s_main_menu, &idx, NULL);
 }
@@ -1714,6 +1817,11 @@ static void main_window_unload(Window *window) {
 
 static void main_window_appear(Window *window) {
   menu_layer_reload_data(s_main_menu);
+  arm_autoclose(); // idle timeout starts when the main screen is visible
+}
+
+static void main_window_disappear(Window *window) {
+  cancel_autoclose(); // any other window (sub-menu, dialog, settings) suspends it
 }
 
 static void push_main_window(void) {
@@ -1721,6 +1829,7 @@ static void push_main_window(void) {
   window_set_window_handlers(s_main_window, (WindowHandlers){
     .load = main_window_load,
     .appear = main_window_appear,
+    .disappear = main_window_disappear,
     .unload = main_window_unload,
   });
   window_stack_push(s_main_window, true);
