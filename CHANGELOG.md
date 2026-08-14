@@ -5,7 +5,8 @@
 Launch Home Assistant scripts from your wrist, one tap.
 
 - Stored shortcuts -> instant launch, no browsing
-- Picker auto-fetches all HA scripts (names, areas, labels, icons)
+- Picker auto-fetches all HA scripts (names, areas, labels, icons) and
+  refreshes the stored metadata; update it any time from the sub-menu
 - Per-shortcut OFF / ON / CONFIRM; the confirm screen is a quick step —
   execution then runs from the main screen exactly like without it
 - Missing scripts show a red `!`; SELECT deletes them right from the list,
