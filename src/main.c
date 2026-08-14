@@ -137,6 +137,7 @@ static const uint32_t ICONS[] = {
   RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT,
   RESOURCE_ID_ICON_WATCH,
   RESOURCE_ID_ICON_PINE_TREE,
+  RESOURCE_ID_ICON_BABY_BOTTLE,
 };
 
 // White-glyph variants of the same table, used on dark backgrounds. The
@@ -238,6 +239,7 @@ static const uint32_t ICONS_WHITE[] = {
   RESOURCE_ID_ICON_GARAGE_OPEN_VARIANT_WHITE,
   RESOURCE_ID_ICON_WATCH_WHITE,
   RESOURCE_ID_ICON_PINE_TREE_WHITE,
+  RESOURCE_ID_ICON_BABY_BOTTLE_WHITE,
 };
 
 #define ICON_COUNT ((uint8_t)(sizeof(ICONS) / sizeof(ICONS[0])))
@@ -1040,16 +1042,8 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
 
-  // Info below the bar: the script's mdi icon name. (HA has no "category"
-  // attribute for scripts — labels are the user-defined grouping; the icon
-  // name is what the entity registry provides.)
-  y = center + bar_h / 2 + 6;
-  if (e->icon_name[0]) {
-    snprintf(row, sizeof(row), "Icon: %s", e->icon_name);
-    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin, y, w, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  }
+  // Below the bar: nothing but the footer — the script's icon stays a pure
+  // glyph in the banner (no icon-name text anywhere).
 
   // Footer: entity key (like the notification timestamp line).
   graphics_context_set_text_color(ctx, GColorDarkGray);
@@ -1206,16 +1200,6 @@ static Window *s_reorder_window;
 static MenuLayer *s_reorder_menu;
 static int32_t s_reorder_held = -1;
 
-static void swap_shortcuts(int32_t a, int32_t b) {
-  if (a < 0 || b < 0 || a >= s_shortcut_count || b >= s_shortcut_count || a == b) {
-    return;
-  }
-  Shortcut tmp = s_shortcuts[a];
-  s_shortcuts[a] = s_shortcuts[b];
-  s_shortcuts[b] = tmp;
-  persist_save();
-}
-
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
   return 3;
@@ -1280,6 +1264,12 @@ static void push_submenu_window(void) {
 
 // ---- reorder mode ----
 
+// Reordering works on a scratch copy: up/down shifts mutate the scratch
+// only; SELECT on the held row ("DROP") commits it to the real list and
+// persists. BACK discards the pending moves, so leaving without an explicit
+// drop never changes the stored order.
+static Shortcut s_reorder_scratch[MAX_SHORTCUTS];
+
 static uint16_t reorder_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                      void *callback_context) {
   return s_shortcut_count;
@@ -1290,7 +1280,7 @@ static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *
   if (cell_index->row >= s_shortcut_count) {
     return;
   }
-  Shortcut *sc = &s_shortcuts[cell_index->row];
+  Shortcut *sc = &s_reorder_scratch[cell_index->row];
   GRect b = layer_get_bounds(cell_layer);
   bool selected = menu_layer_is_index_selected(s_reorder_menu, (MenuIndex *)cell_index);
   bool held = (s_reorder_held == (int32_t)cell_index->row);
@@ -1314,12 +1304,9 @@ static void reorder_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *
                      GRect(44, 4, b.size.w - 50, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
-  char subtitle[64];
-  if (held) {
-    snprintf(subtitle, sizeof(subtitle), "MOVE");
-  } else {
-    snprintf(subtitle, sizeof(subtitle), "%d of %d", cell_index->row + 1, s_shortcut_count);
-  }
+  // The subtitle tells what the next SELECT press does: grab this row
+  // (MOVE), or commit it at the current position (DROP).
+  const char *subtitle = held ? "DROP" : "MOVE";
   graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
   graphics_draw_text(ctx, subtitle, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(44, 27, b.size.w - 50, 18),
@@ -1337,7 +1324,9 @@ static void reorder_toggle_hold(void) {
     s_reorder_held = row;
     vibes_short_pulse();
   } else if (row == s_reorder_held) {
-    // Drop.
+    // Drop: commit the scratch order to the real list and persist.
+    memcpy(s_shortcuts, s_reorder_scratch, (size_t)s_shortcut_count * sizeof(Shortcut));
+    persist_save();
     s_reorder_held = -1;
     vibes_short_pulse();
   }
@@ -1356,7 +1345,9 @@ static void reorder_move(int32_t delta) {
   if (target < 0 || target >= s_shortcut_count) {
     return;
   }
-  swap_shortcuts(s_reorder_held, target);
+  Shortcut tmp = s_reorder_scratch[s_reorder_held];
+  s_reorder_scratch[s_reorder_held] = s_reorder_scratch[target];
+  s_reorder_scratch[target] = tmp;
   s_reorder_held = target;
   MenuIndex idx = { .section = 0, .row = (uint16_t)target };
   // Instant jump (no scroll animation): rapid up/down presses would cancel
@@ -1390,10 +1381,9 @@ static void reorder_down_click(ClickRecognizerRef rec, void *ctx) {
 }
 
 static void reorder_back_click(ClickRecognizerRef rec, void *ctx) {
-  if (s_reorder_held >= 0) {
-    s_reorder_held = -1;
-    persist_save();
-  }
+  // Discard pending moves: nothing was committed unless SELECT dropped the
+  // held shortcut. The scratch copy is simply dropped with the window.
+  s_reorder_held = -1;
   window_stack_pop(true);
 }
 
@@ -1407,6 +1397,8 @@ static void reorder_click_config_provider(void *ctx) {
 static void reorder_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
+  // Snapshot the current order; moves only mutate the scratch until a drop.
+  memcpy(s_reorder_scratch, s_shortcuts, (size_t)s_shortcut_count * sizeof(Shortcut));
   window_set_background_color(window, theme_bg());
   s_reorder_menu = menu_layer_create(bounds);
   menu_layer_set_callbacks(s_reorder_menu, NULL, (MenuLayerCallbacks){
@@ -1518,8 +1510,12 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     } else {
       title = sc->name[0] ? sc->name : sc->key;
     }
+    // Exec label color: the exec color on theme rows, black on the accent
+    // selection — green/red on the user's accent can vanish (the tinted
+    // state icon still carries the color on both).
     graphics_context_set_text_color(ctx,
-        exec ? exec_col : (selected ? GColorBlack : theme_fg()));
+        exec ? (selected ? GColorBlack : exec_col)
+             : (selected ? GColorBlack : theme_fg()));
     graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                        GRect(44, 4, b.size.w - 50, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -1527,7 +1523,7 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     if (exec) {
       // Subtitle: the short error on failure, nothing otherwise.
       if (exec_failed) {
-        graphics_context_set_text_color(ctx, exec_col);
+        graphics_context_set_text_color(ctx, selected ? GColorBlack : exec_col);
         graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
                            fonts_get_system_font(FONT_KEY_GOTHIC_14),
                            GRect(44, 27, b.size.w - 50, 18),
@@ -1546,8 +1542,8 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                          GRect(b.size.w - 24, 8, 16, 16),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     } else {
-      // Second line: <area> - <tags> - <category> to tell same-named scripts
-      // apart; only the parts HA actually provides.
+      // Second line: <area> - <tags> to tell same-named scripts apart; only
+      // the parts HA actually provides. The icon stays a pure glyph.
       char sub[96];
       sub[0] = '\0';
       if (sc->area[0]) {
@@ -1556,10 +1552,6 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
       if (sc->labels[0]) {
         size_t l = strlen(sub);
         snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " - " : "", sc->labels);
-      }
-      if (sc->icon_name[0]) {
-        size_t l = strlen(sub);
-        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " - " : "", sc->icon_name);
       }
       if (sub[0]) {
         graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());

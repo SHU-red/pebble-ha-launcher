@@ -140,7 +140,8 @@ var MDI_ICONS = [
   'rocket',             // 91
   'garage-open-variant',// 92
   'watch',              // 93
-  'pine-tree'           // 94
+  'pine-tree',          // 94
+  'baby-bottle'         // 95
 ];
 
 var MDI_ICON_INDEX = {};

@@ -532,6 +532,16 @@
         },
         {
           "type": "png",
+          "name": "ICON_BABY_BOTTLE",
+          "file": "images/icon_095.png"
+        },
+        {
+          "type": "png",
+          "name": "ICON_BABY_BOTTLE_WHITE",
+          "file": "images/icon_095_w.png"
+        },
+        {
+          "type": "png",
           "name": "ICON_SCRIPT_TEXT_WHITE",
           "file": "images/icon_000_w.png"
         },
