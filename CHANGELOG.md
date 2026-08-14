@@ -10,9 +10,9 @@ Launch Home Assistant scripts from your wrist, one tap.
   execution then runs from the main screen exactly like without it
 - Missing scripts show a red `!`; SELECT deletes them right from the list,
   BACK keeps them (HA may be temporarily unreachable)
-- Robust against renamed / duplicated / deleted scripts: ghosts and
-  entities without a runnable service are never offered, stale entries
-  surface as missing instead of failing with HTTP 400
+- Robust against renamed / duplicated / deleted scripts: execution uses
+  `script.turn_on` by entity id, so entity-id renames and duplicates work;
+  unavailable ghosts are never listed
 - Icon clustering: 79 glyphs cover about half of Material Design Icons via
   concept clusters (all `garage-*` -> one garage, `bed-*` -> home, ...)
 - Automatic close (Never/3s/5s/10s/15s/30s), set on the watch
