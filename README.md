@@ -22,7 +22,8 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   a symbol: `$` for scripts, a play triangle for scenes, then
   `·`-joined area, tags and icon name. The "Info line" sub-menu setting
   cycles which fields show (None / T·A·Tg·C / T·A·Tg / T·A / A·Tg·C /
-  T·Tg·C)
+  T·Tg·C / name — the last shows only the shortcut name, bigger and
+  centered)
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or
   CONFIRM (asks before running); grey / green / orange states in the picker
 - **Touch-ready** — native touch navigation, opt-in from the phone settings
@@ -42,11 +43,12 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
 3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
    script and scene row shows its state — grey `OFF` (not in the launcher),
    green `ON` (runs directly), orange `CONFIRM` (asks before running) — plus
-   a four-region label/value table: banner (icon glyph + name), Type/Area
-   split, state band, Tags/Category split, with muted bold labels, black
-   values and `—` for empty ones; the full entity id as footer. (HA
-   categories are websocket-only, so the Category value is `—` until HA
-   exposes them to the app's REST/template API.)
+   a four-region label/value table that follows the app theme (dark/light):
+   banner (icon glyph + name), Type/Area split, state band, Tags/Category
+   split, with muted bold labels, foreground values and `—` for empty ones;
+   the full entity id as footer. (HA categories are websocket-only, so the
+   Category value is `—` until HA exposes them to the app's REST/template
+   API.)
    Press Select to cycle the state, then run the picked shortcuts from the
    main list. The 3-dot entry row also holds Change Order, Update metadata,
    Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s) and Info line

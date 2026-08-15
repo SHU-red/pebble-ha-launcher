@@ -14,15 +14,18 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
   by a `·` divider and overflow truncates at the end, so the beginning of
   the line stays fixed
 - New "Info line" sub-menu setting (SELECT cycles, like Automatic close):
-  choose which fields the main-screen line shows — None,
-  T·A·Tg·C, T·A·Tg, T·A, A·Tg·C, T·Tg·C — persisted on the watch
+  choose which fields the main-screen line shows — None, T·A·Tg·C,
+  T·A·Tg, T·A, A·Tg·C, T·Tg·C or `name` (only the name, 24pt bold and
+  centered, no icon/subtitle) — persisted on the watch
 - Fixed: scene subtitle had no divider/space between the play symbol and
   the area text (symbol touched the text); scripts already had `$ · `
 - Shortcut edit cards use a strict four-region label/value table: banner |
   top split (Type | Area) | state band | bottom split (Tags | Category) —
-  muted bold labels, black values, full-width rows, no fills, nothing
-  overlaps the state band; full entity id as footer — same-named
-  scene/script rows stay distinct
+  muted bold labels, full-width rows, no fills, nothing overlaps the state
+  band; full entity id as footer — same-named scene/script rows stay
+  distinct
+- Edit cards now respect dark/light mode: page, labels, values and footer
+  follow the app theme instead of always being white
 - The icon is only ever shown as the banner glyph — its mdi name is no
   longer rendered as text anywhere on the edit card
 - Category row: HA categories (entity-registry scope mapping) are exposed

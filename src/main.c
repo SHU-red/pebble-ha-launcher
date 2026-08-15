@@ -42,6 +42,7 @@
 
 #define SUBTITLE_NONE 0x00
 #define SUBTITLE_FULL (SUBTITLE_SYMBOL | SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY)
+#define SUBTITLE_NAME 0x10 // special: name only, big and centered, no icon
 
 static const uint8_t SUBTITLE_PRESETS[] = {
   SUBTITLE_NONE,                                           // none
@@ -50,6 +51,7 @@ static const uint8_t SUBTITLE_PRESETS[] = {
   SUBTITLE_SYMBOL | SUBTITLE_AREA,                         // symbol · area
   SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY,       // area · tags · category
   SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY,     // symbol · tags · category
+  SUBTITLE_NAME,                                           // name only (big, centered)
 };
 #define SUBTITLE_PRESET_COUNT ((uint8_t)(sizeof(SUBTITLE_PRESETS) / sizeof(SUBTITLE_PRESETS[0])))
 
@@ -1184,11 +1186,11 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   const int16_t bar_h = 34;
   const int16_t center = bounds.size.h / 2; // physical select-button level
 
-  // White notification-style page.
-  graphics_context_set_fill_color(ctx, GColorWhite);
+  // Full-screen card, colored with the app theme (dark/light).
+  graphics_context_set_fill_color(ctx, theme_bg());
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-  // Accent banner: icon far left, script name right after it.
+  // Accent banner: icon far left, entity name right after it.
   GRect banner = GRect(0, 0, bounds.size.w, banner_h);
   graphics_context_set_fill_color(ctx, s_accent);
   graphics_fill_rect(ctx, banner, 0, GCornerNone);
@@ -1231,25 +1233,27 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
 
   // Strict four-region layout: banner | top split (Type | Area) | state bar
   // | bottom split (Tags | Category). The splits are full-width label/value
-  // rows — muted bold labels left, black values right, no boxes, nothing
-  // overlaps the state band. Empty values render '—'. Value x-offsets are
-  // the measured GOTHIC_14_BOLD label advances + 6px gap, so each value
-  // gets the maximum remaining width. (Text rects are 16px tall: Gothic 14
-  // glyph ink spans up to 16px and graphics_draw_text clips to its box.)
+  // rows — muted bold labels left, foreground values right, no boxes,
+  // nothing overlaps the state band. Empty values render '—'. Colors follow
+  // the app theme (dark/light). Value x-offsets are the measured
+  // GOTHIC_14_BOLD label advances + 6px gap, so each value gets the maximum
+  // remaining width. (Text rects are 16px tall: Gothic 14 glyph ink spans
+  // up to 16px and graphics_draw_text clips to its box.)
   const int16_t bar_top = center - bar_h / 2;
   const int16_t row_top1 = banner_h + 1;              // 33
   const int16_t row_top2 = row_top1 + 16;             // 49
   const int16_t row_bot1 = bar_top + bar_h + 4;       // 105
   const int16_t row_bot2 = row_bot1 + 19;             // 124
-  const GColor muted = GColorDarkGray;
+  const GColor muted = theme_muted();
+  const GColor fg = theme_fg();
 
   // ---- Top split: Type | Area ----
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_text_color(ctx, fg);
   if (e->type) {
     // Scene: drawn play triangle (U+25B6 is not in the system fonts), then
     // the word — same legend as the main screen's leading symbol.
     if (s_scene_tri) {
-      graphics_context_set_fill_color(ctx, GColorBlack);
+      graphics_context_set_fill_color(ctx, fg);
       gpath_move_to(s_scene_tri, GPoint(margin + 3, row_top1 + 8));
       gpath_draw_filled(ctx, s_scene_tri);
     }
@@ -1270,7 +1274,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_draw_text(ctx, "AREA", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                      GRect(margin, row_top2, 31, 16),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_text_color(ctx, fg);
   graphics_draw_text(ctx, e->area[0] ? e->area : "—",
                      fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin + 37, row_top2, bounds.size.w - margin - 47, 16),
@@ -1295,7 +1299,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_draw_text(ctx, "TAGS", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                      GRect(margin, row_bot1 + 1, 32, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_text_color(ctx, fg);
   graphics_draw_text(ctx, tags[0] ? tags : "—",
                      fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin + 38, row_bot1 + 1, bounds.size.w - margin - 48, 18),
@@ -1308,7 +1312,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   graphics_draw_text(ctx, "CATEGORY", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                      GRect(margin, row_bot2 + 1, 63, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_context_set_text_color(ctx, fg);
   graphics_draw_text(ctx, "—", fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin + 69, row_bot2 + 1, bounds.size.w - margin - 79, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -1321,7 +1325,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   // rows at a glance.
   char foot[72];
   snprintf(foot, sizeof(foot), "%s.%s", TYPE_DOMAIN(e->type), e->key);
-  graphics_context_set_text_color(ctx, GColorDarkGray);
+  graphics_context_set_text_color(ctx, muted);
   graphics_draw_text(ctx, foot, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin, bounds.size.h - 22, bounds.size.w - 2 * margin, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
@@ -1367,8 +1371,8 @@ static void edit_window_load(Window *window) {
   Layer *root = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(root);
 
-  // Notification-style picker: white page regardless of the app theme.
-  window_set_background_color(window, GColorWhite);
+  // Full-bleed picker page colored with the app theme (dark/light).
+  window_set_background_color(window, theme_bg());
 
   // No action bar: the picker is a full-bleed native-notification page.
   s_edit_menu = menu_layer_create(bounds);
@@ -1391,7 +1395,7 @@ static void edit_window_load(Window *window) {
   text_layer_set_text_alignment(s_edit_status, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_edit_status, GTextOverflowModeWordWrap);
   text_layer_set_background_color(s_edit_status, GColorClear);
-  text_layer_set_text_color(s_edit_status, GColorBlack);
+  text_layer_set_text_color(s_edit_status, theme_fg());
   layer_add_child(root, text_layer_get_layer(s_edit_status));
 }
 
@@ -1414,7 +1418,7 @@ static void edit_window_appear(Window *window) {
   s_edit_visible = true;
   edit_begin_collect(0);
   edit_show_status(s_edit_update_mode ? "Updating..." : "Fetching...",
-                   s_edit_update_mode ? GColorBlack : GColorBlack);
+                   theme_fg());
 
   DictionaryIterator *iter;
   AppMessageResult res = app_message_outbox_begin(&iter);
@@ -1600,6 +1604,7 @@ static const char *subtitle_label(uint8_t fields) {
     case SUBTITLE_SYMBOL | SUBTITLE_AREA: return "T·A";
     case SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "A·Tg·C";
     case SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "T·Tg·C";
+    case SUBTITLE_NAME: return "name";
     default: return "none";
   }
 }
@@ -1840,6 +1845,36 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     bool exec = (row == (uint16_t)s_exec_row);
     bool exec_failed = exec && (s_exec_state == EXEC_FAILED);
     GColor exec_col = exec ? (exec_failed ? GColorRed : GColorGreen) : GColorClear;
+
+    // Info line "name" preset: nothing but the name (or the exec state),
+    // bigger and centered so the row reads at a glance. No icon, no
+    // subtitle; a missing entity keeps its red '!' badge.
+    if (s_subtitle_fields == SUBTITLE_NAME) {
+      const char *label = exec
+          ? (exec_failed ? "FAILED" : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING"))
+          : (sc->name[0] ? sc->name : sc->key);
+      graphics_context_set_text_color(ctx,
+          exec ? (selected ? GColorBlack : exec_col)
+               : (selected ? GColorBlack : theme_fg()));
+      graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                         GRect(8, 8, b.size.w - 16, 26),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      if (exec && exec_failed) {
+        graphics_context_set_text_color(ctx, selected ? GColorBlack : exec_col);
+        graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                           GRect(8, 31, b.size.w - 16, 16),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      } else if (!exec && sc->missing) {
+        graphics_context_set_fill_color(ctx, GColorRed);
+        graphics_fill_circle(ctx, GPoint(b.size.w - 16, 16), 8);
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(b.size.w - 24, 8, 16, 16),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      }
+      return;
+    }
 
     uint32_t icon_res;
     if (exec) {
