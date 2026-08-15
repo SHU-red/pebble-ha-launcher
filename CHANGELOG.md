@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0
+## 0.5.0
 
 Scenes join scripts: trigger any Home Assistant scene exactly like a script.
 
