@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0
+
+Safer confirmations and haptic feedback.
+
+- Confirmation screen reworked: the shortcut's icon sits centered above
+  the prompt, with the button hints below — no more second-SELECT trigger
+- Confirming now requires pressing UP + DOWN together (BACK still cancels),
+  so a stray tap on SELECT can never fire a shortcut accidentally
+- The watch pulses on every shortcut launch and on every error/timeout of
+  a shortcut, so you get wrist feedback even with the main menu in view
+- New "Vibrations" sub-menu setting (ON/OFF, SELECT cycles, same level as
+  Automatic close / Info line): turns off every haptic in the app —
+  launch/error feedback, dialog pulses and menu feedback — persisted on
+  the watch; defaults to ON
+
 ## 0.5.0
 
 Scenes join scripts: trigger any Home Assistant scene exactly like a script.

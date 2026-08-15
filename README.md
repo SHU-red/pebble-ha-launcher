@@ -25,7 +25,12 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   T·Tg·C / none - only name — the name alone, 24pt, centered / none - big
   name — icon plus a 24pt left-aligned name)
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or
-  CONFIRM (asks before running); grey / green / orange states in the picker
+  CONFIRM (asks before running); grey / green / orange states in the picker.
+  The confirm screen shows the shortcut's icon and launches only when you
+  press UP + DOWN together (BACK cancels), so a stray tap can't fire
+- **Haptic feedback** — the watch pulses on every shortcut launch and on
+  every error/timeout; a "Vibrations" sub-menu setting (ON/OFF) silences
+  every haptic in the app
 - **Touch-ready** — native touch navigation, opt-in from the phone settings
   (off by default until the firmware touch bugs are fixed)
 - **Auto-close** — set Never/3s/5s/10s/15s/30s on the watch; idle time on the
@@ -50,9 +55,10 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    Category value is `—` until HA exposes them to the app's REST/template
    API.)
    Press Select to cycle the state, then run the picked shortcuts from the
-   main list. The 3-dot entry row also holds Change Order, Update metadata,
-   Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s) and Info line
-   (SELECT cycles the main-screen detail fields). Missing entities stay
+   The 3-dot entry row also holds Change Order, Update metadata,
+   Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s), Info line
+   (SELECT cycles the main-screen detail fields) and Vibrations (SELECT
+   toggles every haptic on/off). Missing entities stay
    listed in the picker with a red `!` so you can turn them off.
 
 ## Build

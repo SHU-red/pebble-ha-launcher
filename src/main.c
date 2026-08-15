@@ -25,6 +25,7 @@
 #define PERSIST_KEY_TOUCH 7          // int32: 1 = native touch navigation enabled
 #define PERSIST_KEY_AUTOCLOSE 8      // int32: seconds after success before auto-close (0 = never)
 #define PERSIST_KEY_SUBTITLE 9       // int32: main-screen info-line field mask (SUBTITLE_*)
+#define PERSIST_KEY_VIBRATE 10       // int32: 1 = haptics on (watch-menu setting)
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
@@ -69,6 +70,15 @@ static bool subtitle_preset_valid(uint8_t fields) {
 #define REQUEST_TIMEOUT_MS 10000     // execute request timeout
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
 #define PULSE_INTERVAL_MS 250        // "Sending..." animated ellipsis
+
+// Confirmation dialog layout: shortcut icon centered above the title
+// (prompt), hint lines below. Sizes are the native icon size and 2 lines
+// of GOTHIC_24 / GOTHIC_18.
+#define DIALOG_ICON_SIZE 32
+#define DIALOG_ICON_GAP 10
+#define DIALOG_TITLE_H 58
+#define DIALOG_HINT_GAP 2
+#define DIALOG_HINT_H 54
 
 // ---------------------------------------------------------------------------
 // Icon table: index == pebble.resources.media order in package.json.
@@ -301,8 +311,14 @@ static bool s_dark_mode;
 static bool s_touch_enabled;
 static int32_t s_autoclose_seconds; // 0 = never close automatically
 static uint8_t s_subtitle_fields = SUBTITLE_FULL; // main-screen info line mask
+static bool s_vibrate_enabled = true; // 1 = haptics on (watch-menu setting)
 
 static AppTimer *s_autoclose_timer;
+
+//! Haptic helpers: every vibration in the app goes through these, so the
+//! watch-menu "Vibrations" ON/OFF setting silences all of them.
+static void vibe_pulse(void) { if (s_vibrate_enabled) vibes_short_pulse(); }
+static void vibe_double(void) { if (s_vibrate_enabled) vibes_double_pulse(); }
 
 //! A shortcut's identity is (type, key): scene.pebble_test and
 //! script.pebble_test coexist as distinct shortcuts.
@@ -393,6 +409,9 @@ static void persist_load(void) {
   if (!subtitle_preset_valid(s_subtitle_fields)) {
     s_subtitle_fields = SUBTITLE_FULL; // unset/corrupt -> full line
   }
+  // Haptics default ON; only an explicit stored OFF disables them.
+  s_vibrate_enabled = !persist_exists(PERSIST_KEY_VIBRATE) ||
+                      persist_read_int(PERSIST_KEY_VIBRATE) != 0;
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
@@ -435,7 +454,10 @@ static void persist_save_config(const char *base_url, const char *token, bool co
 
 static Window *s_dialog_window;
 static Layer *s_dialog_bg;
-static TextLayer *s_dialog_text;
+static TextLayer *s_dialog_text;    // title: prompt name / status (GOTHIC_24)
+static TextLayer *s_dialog_hint;    // button hints (GOTHIC_18), confirm/delete only
+static BitmapLayer *s_dialog_icon;  // shortcut icon, centered above the title
+static GBitmap *s_dialog_icon_bmp;
 static AppTimer *s_timeout_timer;
 static AppTimer *s_dismiss_timer;
 static AppTimer *s_pulse_timer;
@@ -443,14 +465,21 @@ static bool s_dialog_active;
 static bool s_dialog_confirm;
 static bool s_dialog_delete;
 static char s_dialog_text_buf[128];
+static char s_dialog_hint_buf[64];
 static uint8_t s_pulse_phase;
 static GColor s_dialog_color;
+
+// Raw press state for the UP+DOWN confirm chord: the confirm fires on the
+// second press while the first button is still held.
+static bool s_chord_up;
+static bool s_chord_down;
 
 static void start_execute(const char *entity_id);
 
 typedef struct {
   char entity_id[72]; // full entity id ("script.<key>" / "scene.<key>")
   char name[48];
+  uint8_t icon_idx;
 } ConfirmCtx;
 
 static ConfirmCtx s_confirm_ctx;
@@ -551,19 +580,12 @@ static void dialog_dismiss_cb(void *data);
 static void delete_shortcut_idx(int32_t idx);
 
 static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
-  if (s_dialog_delete) {
-    // Missing-in-HA prompt: SELECT deletes the shortcut.
-    dialog_dismiss_cb(NULL);
-    delete_shortcut_idx(shortcut_index_for_entity(s_confirm_ctx.entity_id));
-    return;
+  if (!s_dialog_delete) {
+    return; // confirmation mode: SELECT is inert, UP+DOWN together confirms
   }
-  if (!s_dialog_confirm) return;
-  s_dialog_confirm = false;
-  // The confirm screen is only an intermediate step: dismiss it and run
-  // the standard execute flow so the main menu shows the exec overlay
-  // exactly as when executing without confirmation.
+  // Missing-in-HA prompt: SELECT deletes the shortcut.
   dialog_dismiss_cb(NULL);
-  start_execute(s_confirm_ctx.entity_id);
+  delete_shortcut_idx(shortcut_index_for_entity(s_confirm_ctx.entity_id));
 }
 
 static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
@@ -578,7 +600,42 @@ static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
   dialog_dismiss_cb(NULL);
 }
 
+//! Fires when both UP and DOWN are held at once. Dismiss the confirm
+//! screen and run the standard execute flow so the main menu shows the
+//! exec overlay exactly as when executing without confirmation.
+static void dialog_chord_check(void) {
+  if (!s_dialog_confirm || !s_chord_up || !s_chord_down) {
+    return;
+  }
+  s_dialog_confirm = false;
+  dialog_dismiss_cb(NULL);
+  start_execute(s_confirm_ctx.entity_id);
+}
+
+//! Raw UP/DOWN chord: the *_down handlers fire on press, the *_up handlers
+//! on release, so the confirm triggers exactly while both buttons are held
+//! — a stray tap on either alone (or on SELECT) can never launch.
+static void dialog_chord_up_down(ClickRecognizerRef rec, void *ctx) {
+  s_chord_up = true;
+  dialog_chord_check();
+}
+
+static void dialog_chord_up_up(ClickRecognizerRef rec, void *ctx) {
+  s_chord_up = false;
+}
+
+static void dialog_chord_down_down(ClickRecognizerRef rec, void *ctx) {
+  s_chord_down = true;
+  dialog_chord_check();
+}
+
+static void dialog_chord_down_up(ClickRecognizerRef rec, void *ctx) {
+  s_chord_down = false;
+}
+
 static void dialog_click_config_provider(void *ctx) {
+  window_raw_click_subscribe(BUTTON_ID_UP, dialog_chord_up_down, dialog_chord_up_up, NULL);
+  window_raw_click_subscribe(BUTTON_ID_DOWN, dialog_chord_down_down, dialog_chord_down_up, NULL);
   window_single_click_subscribe(BUTTON_ID_SELECT, dialog_confirm_select);
   window_single_click_subscribe(BUTTON_ID_BACK, dialog_confirm_cancel);
 }
@@ -597,6 +654,7 @@ static void request_timeout_cb(void *data) {
   if (s_exec_row >= 0) {
     s_exec_state = EXEC_FAILED;
     snprintf(s_exec_error, sizeof(s_exec_error), "Timeout");
+    vibe_double();
     arm_exec_revert();
     menu_layer_reload_data(s_main_menu);
   }
@@ -625,6 +683,44 @@ static void dialog_cancel_timers(void) {
   }
 }
 
+//! Position the dialog layers. With the shortcut icon: the whole block
+//! (icon | title | hint) is vertically centered. Without it (working /
+//! final dialogs) the title alone is centered; the hint stays hidden.
+static void dialog_layout(void) {
+  GRect b = layer_get_bounds(s_dialog_bg);
+  if (!layer_get_hidden(bitmap_layer_get_layer(s_dialog_icon))) {
+    int16_t top = (b.size.h - (DIALOG_ICON_SIZE + DIALOG_ICON_GAP +
+                                DIALOG_TITLE_H + DIALOG_HINT_GAP + DIALOG_HINT_H)) / 2;
+    layer_set_frame(bitmap_layer_get_layer(s_dialog_icon),
+                    GRect((b.size.w - DIALOG_ICON_SIZE) / 2, top,
+                          DIALOG_ICON_SIZE, DIALOG_ICON_SIZE));
+    layer_set_frame(text_layer_get_layer(s_dialog_text),
+                    GRect(8, top + DIALOG_ICON_SIZE + DIALOG_ICON_GAP,
+                          b.size.w - 16, DIALOG_TITLE_H));
+    layer_set_frame(text_layer_get_layer(s_dialog_hint),
+                    GRect(8, top + DIALOG_ICON_SIZE + DIALOG_ICON_GAP +
+                              DIALOG_TITLE_H + DIALOG_HINT_GAP,
+                          b.size.w - 16, DIALOG_HINT_H));
+  } else {
+    int16_t top = (b.size.h - DIALOG_TITLE_H) / 2;
+    layer_set_frame(text_layer_get_layer(s_dialog_text),
+                    GRect(8, top, b.size.w - 16, DIALOG_TITLE_H));
+  }
+}
+
+//! Show the shortcut's white glyph centered above the title (confirm /
+//! delete prompts). The bitmap is (re)created lazily — dialog_prepare
+//! destroyed the previous one.
+static void dialog_show_icon(void) {
+  if (!s_dialog_icon_bmp) {
+    s_dialog_icon_bmp = gbitmap_create_with_resource(
+        icon_resource_white(s_confirm_ctx.icon_idx));
+    bitmap_layer_set_bitmap(s_dialog_icon, s_dialog_icon_bmp);
+  }
+  layer_set_hidden(bitmap_layer_get_layer(s_dialog_icon), false);
+  dialog_layout();
+}
+
 static void dialog_create(void) {
   if (s_dialog_active) {
     return;
@@ -643,7 +739,14 @@ static void dialog_create(void) {
   s_dialog_color = GColorGreen;
   layer_add_child(root, s_dialog_bg);
 
-  s_dialog_text = text_layer_create(GRect(8, (bounds.size.h - 100) / 2, bounds.size.w - 16, 100));
+  s_dialog_icon = bitmap_layer_create(GRect(0, 0, DIALOG_ICON_SIZE, DIALOG_ICON_SIZE));
+  bitmap_layer_set_background_color(s_dialog_icon, GColorClear);
+  bitmap_layer_set_compositing_mode(s_dialog_icon, GCompOpSet);
+  bitmap_layer_set_alignment(s_dialog_icon, GAlignCenter);
+  layer_set_hidden(bitmap_layer_get_layer(s_dialog_icon), true);
+  layer_add_child(s_dialog_bg, bitmap_layer_get_layer(s_dialog_icon));
+
+  s_dialog_text = text_layer_create(GRect(8, 0, bounds.size.w - 16, DIALOG_TITLE_H));
   text_layer_set_font(s_dialog_text, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_dialog_text, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_dialog_text, GTextOverflowModeWordWrap);
@@ -651,14 +754,25 @@ static void dialog_create(void) {
   text_layer_set_text_color(s_dialog_text, GColorWhite);
   layer_add_child(s_dialog_bg, text_layer_get_layer(s_dialog_text));
 
+  s_dialog_hint = text_layer_create(GRect(8, 0, bounds.size.w - 16, DIALOG_HINT_H));
+  text_layer_set_font(s_dialog_hint, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text_alignment(s_dialog_hint, GTextAlignmentCenter);
+  text_layer_set_overflow_mode(s_dialog_hint, GTextOverflowModeWordWrap);
+  text_layer_set_background_color(s_dialog_hint, GColorClear);
+  text_layer_set_text_color(s_dialog_hint, GColorWhite);
+  layer_set_hidden(text_layer_get_layer(s_dialog_hint), true);
+  layer_add_child(s_dialog_bg, text_layer_get_layer(s_dialog_hint));
+
   s_dialog_active = true;
+  dialog_layout();
   window_stack_push(s_dialog_window, false);
 }
 
-//! Orange approval screen: one more SELECT confirms, BACK cancels.
+//! Orange approval screen: UP+DOWN together confirms, BACK cancels.
 //! Shared dialog setup: cancel timers, reset the interaction modes, paint
-//! the background color, show white text and pulse. The caller sets its
-//! mode flag and any extra timers afterwards.
+//! the background color, show white title text and pulse, hide the icon
+//! and hint layers. The caller sets its mode flag and any extra layers
+//! afterwards.
 static void dialog_prepare(GColor color, const char *text) {
   dialog_cancel_timers();
   s_dialog_confirm = false;
@@ -667,16 +781,26 @@ static void dialog_prepare(GColor color, const char *text) {
   layer_mark_dirty(s_dialog_bg);
   text_layer_set_text_color(s_dialog_text, GColorWhite);
   text_layer_set_text(s_dialog_text, text);
-  vibes_short_pulse();
+  if (s_dialog_icon) {
+    layer_set_hidden(bitmap_layer_get_layer(s_dialog_icon), true);
+    if (s_dialog_icon_bmp) {
+      gbitmap_destroy(s_dialog_icon_bmp);
+      s_dialog_icon_bmp = NULL;
+    }
+    layer_set_hidden(text_layer_get_layer(s_dialog_hint), true);
+  }
+  dialog_layout();
+  vibe_pulse();
 }
 
 //! Remember the shortcut the dialog is about (name for the prompt, key for
-//! the action) — shared by the confirm and delete prompts.
+//! the action, icon) — shared by the confirm and delete prompts.
 static void dialog_capture(const Shortcut *sc) {
   // Precision-bound: the key fallback can exceed the name buffer.
   snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%.*s",
            (int)sizeof(s_confirm_ctx.name) - 1, sc->name[0] ? sc->name : sc->key);
   shortcut_entity_id(sc, s_confirm_ctx.entity_id, sizeof(s_confirm_ctx.entity_id));
+  s_confirm_ctx.icon_idx = sc->icon_idx;
 }
 
 static void dialog_show_confirm(const Shortcut *sc) {
@@ -685,9 +809,14 @@ static void dialog_show_confirm(const Shortcut *sc) {
   }
   dialog_capture(sc);
   snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf),
-           "Run %s?\n\nSELECT: confirm\nBACK: cancel", s_confirm_ctx.name);
+           "Run %s?", s_confirm_ctx.name);
   dialog_prepare(GColorOrange, s_dialog_text_buf);
   s_dialog_confirm = true;
+  snprintf(s_dialog_hint_buf, sizeof(s_dialog_hint_buf),
+           "UP + DOWN: confirm\nBACK: cancel");
+  text_layer_set_text(s_dialog_hint, s_dialog_hint_buf);
+  layer_set_hidden(text_layer_get_layer(s_dialog_hint), false);
+  dialog_show_icon();
 }
 
 //! Red prompt for a shortcut marked missing in Home Assistant: SELECT
@@ -699,9 +828,14 @@ static void dialog_show_delete(const Shortcut *sc) {
   }
   dialog_capture(sc);
   snprintf(s_dialog_text_buf, sizeof(s_dialog_text_buf),
-           "Delete %s?\n\nSELECT: delete\nBACK: keep", s_confirm_ctx.name);
+           "Delete %s?", s_confirm_ctx.name);
   dialog_prepare(GColorRed, s_dialog_text_buf);
   s_dialog_delete = true;
+  snprintf(s_dialog_hint_buf, sizeof(s_dialog_hint_buf),
+           "SELECT: delete\nBACK: keep");
+  text_layer_set_text(s_dialog_hint, s_dialog_hint_buf);
+  layer_set_hidden(text_layer_get_layer(s_dialog_hint), false);
+  dialog_show_icon();
 }
 
 //! Green working dialog (auto_dismiss = false, animated ellipsis).
@@ -721,13 +855,19 @@ static void dialog_show_final(bool success, const char *text) {
   }
   dialog_prepare(success ? GColorGreen : GColorRed, text);
   if (!success) {
-    vibes_double_pulse();
+    vibe_double();
   }
   s_dismiss_timer = app_timer_register(RESULT_DISMISS_MS, dialog_dismiss_cb, NULL);
 }
 
 static void dialog_unload(Window *window) {
   dialog_cancel_timers();
+  text_layer_destroy(s_dialog_hint);
+  bitmap_layer_destroy(s_dialog_icon);
+  if (s_dialog_icon_bmp) {
+    gbitmap_destroy(s_dialog_icon_bmp);
+    s_dialog_icon_bmp = NULL;
+  }
   text_layer_destroy(s_dialog_text);
   layer_destroy(s_dialog_bg);
   window_destroy(s_dialog_window);
@@ -777,10 +917,12 @@ static void start_execute(const char *entity_id) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send ScriptKey (%d)", (int)res);
     if (s_exec_row >= 0) {
       s_exec_state = EXEC_FAILED;
+      vibe_double();
       menu_layer_reload_data(s_main_menu);
     }
     return;
   }
+  vibe_pulse(); // launch feedback: the request went out
   s_timeout_timer = app_timer_register(REQUEST_TIMEOUT_MS, request_timeout_cb, NULL);
 }
 
@@ -1483,13 +1625,14 @@ static int32_t s_reorder_held = -1;
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 5;
+  return 6;
 }
 
 static const char *autoclose_label(int32_t seconds);
 static void autoclose_cycle(void);
 static const char *subtitle_label(uint8_t fields);
 static void subtitle_cycle(void);
+static void vibration_cycle(void);
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                          void *callback_context) {
@@ -1506,10 +1649,14 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     char sub[48];
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
     menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
-  } else {
+  } else if (cell_index->row == 4) {
     // The preset names ('none - only name', ...) are longer than the
     // autoclose labels, so no ' - SELECT cycles' hint here.
     menu_cell_basic_draw(ctx, cell_layer, "Info line", subtitle_label(s_subtitle_fields), NULL);
+  } else {
+    char sub[48];
+    snprintf(sub, sizeof(sub), "%s - SELECT cycles", s_vibrate_enabled ? "ON" : "OFF");
+    menu_cell_basic_draw(ctx, cell_layer, "Vibrations", sub, NULL);
   }
 }
 
@@ -1522,8 +1669,10 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     push_update_window();
   } else if (cell_index->row == 3) {
     autoclose_cycle();
-  } else {
+  } else if (cell_index->row == 4) {
     subtitle_cycle();
+  } else {
+    vibration_cycle();
   }
 }
 
@@ -1589,7 +1738,7 @@ static void autoclose_cycle(void) {
   }
   s_autoclose_seconds = AUTOCLOSE_OPTIONS[idx];
   persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
-  vibes_short_pulse();
+  vibe_pulse();
   menu_layer_reload_data(s_sub_menu);
 }
 
@@ -1622,7 +1771,22 @@ static void subtitle_cycle(void) {
   }
   s_subtitle_fields = SUBTITLE_PRESETS[idx];
   persist_write_int(PERSIST_KEY_SUBTITLE, (int32_t)s_subtitle_fields);
-  vibes_short_pulse();
+  vibe_pulse();
+  menu_layer_reload_data(s_sub_menu);
+}
+
+// ---------------------------------------------------------------------------
+// Vibrations: watch-menu ON/OFF master switch for every haptic in the app
+// (launch/error feedback, dialog pulses, menu feedback). Same level as
+// Automatic close / Info line; persisted on the watch.
+// ---------------------------------------------------------------------------
+
+static void vibration_cycle(void) {
+  s_vibrate_enabled = !s_vibrate_enabled;
+  persist_write_int(PERSIST_KEY_VIBRATE, s_vibrate_enabled ? 1 : 0);
+  if (s_vibrate_enabled) {
+    vibe_pulse(); // feedback only while haptics are on
+  }
   menu_layer_reload_data(s_sub_menu);
 }
 
@@ -1686,13 +1850,13 @@ static void reorder_toggle_hold(void) {
   if (s_reorder_held < 0) {
     // Grab.
     s_reorder_held = row;
-    vibes_short_pulse();
+    vibe_pulse();
   } else if (row == s_reorder_held) {
     // Drop: commit the scratch order to the real list and persist.
     memcpy(s_shortcuts, s_reorder_scratch, (size_t)s_shortcut_count * sizeof(Shortcut));
     persist_save();
     s_reorder_held = -1;
-    vibes_short_pulse();
+    vibe_pulse();
   }
   menu_layer_reload_data(s_reorder_menu);
 }
@@ -2172,6 +2336,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       } else {
         s_exec_state = EXEC_FAILED;
         snprintf(s_exec_error, sizeof(s_exec_error), "%s", text[0] ? text : "Error");
+        vibe_double();
       }
       arm_exec_revert();
       menu_layer_reload_data(s_main_menu);
@@ -2269,6 +2434,7 @@ static void outbox_failed(DictionaryIterator *iter, AppMessageResult reason, voi
     if (s_timeout_timer) { app_timer_cancel(s_timeout_timer); s_timeout_timer = NULL; }
     s_exec_state = EXEC_FAILED;
     snprintf(s_exec_error, sizeof(s_exec_error), "Send failed");
+    vibe_double();
     arm_exec_revert();
     menu_layer_reload_data(s_main_menu);
   } else if (s_dialog_active) {
