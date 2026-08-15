@@ -2,8 +2,8 @@
  * HA Launcher — PebbleKit JavaScript.
  *
  * Bridges the watch app to Home Assistant:
- *  - Execute: POST /api/services/script/<key>
- *  - Browse:  POST /api/template (Jinja) to list script entities
+ *  - Execute: POST /api/services/<domain>/turn_on with the entity_id
+ *  - Browse:  POST /api/template (Jinja) to list script+scene entities
  *  - Config:  Clay page (documented defaults) — the phone app delivers the
  *             settings to the WATCH, which persists them in its flash; this
  *             JS pulls the config back from the watch on 'ready'.
@@ -34,14 +34,20 @@ var clay = new Clay(clayConfig);
 // is dropped instead of interleaving with the newer one.
 var fetchGeneration = 0;
 
-// Jinja template for browsing: one line per script entity, fields joined by '|'.
-// entity_id|name|area|labels|icon
+// Jinja template for browsing: one line per triggerable entity, fields
+// joined by '|'. entity_id|name|area|labels|icon. The entity_id carries the
+// domain prefix (script. / scene.), so the type is derivable on both sides.
+// Scripts and scenes both run through their domain's turn_on service.
 // Labels come from the labels() template function (registry), mapped to
 // display names — state.labels is NOT exposed in HA templates.
 // 'unavailable' entities are deleted/restored ghosts: never list them, so
 // they can never be executed (HA returns 400 for the missing service).
-var SCRIPT_BROWSE_TEMPLATE =
+var BROWSE_TEMPLATE =
   "{% for s in states.script if s.state != 'unavailable' %}{{ s.entity_id }}|{{ s.name }}|" +
+  "{{ area_name(s.entity_id) or '' }}|" +
+  "{{ labels(s.entity_id) | map('label_name') | join(',') }}|" +
+  "{{ s.attributes.icon or '' }}\n{% endfor %}" +
+  "{% for s in states.scene if s.state != 'unavailable' %}{{ s.entity_id }}|{{ s.name }}|" +
   "{{ area_name(s.entity_id) or '' }}|" +
   "{{ labels(s.entity_id) | map('label_name') | join(',') }}|" +
   "{{ s.attributes.icon or '' }}\n{% endfor %}";
@@ -389,13 +395,16 @@ function sendResult(code, text) {
 }
 
 /**
- * Execute a script: POST {baseUrl}/api/services/script/turn_on with the
- * entity_id. turn_on is entity-based, so it works for every script entity
- * even when its id and entity_id diverge (renames, entity-id overrides,
- * duplicates) — the direct script.<key> service 400s for those.
- * @param {string} scriptKey - key WITHOUT the 'script.' prefix
+ * Execute a script or scene: POST {baseUrl}/api/services/<domain>/turn_on
+ * with the full entity_id. turn_on is entity-based, so it works for every
+ * script/scene entity even when its id and entity_id diverge (renames,
+ * entity-id overrides, duplicates) — the direct <domain>.<key> service 400s
+ * for those.
+ * @param {string} scriptKey - key WITHOUT the domain prefix
+ * @param {string} [type] - 'script' or 'scene'; defaults to 'script'
  */
-function executeScript(scriptKey) {
+function executeScript(scriptKey, type) {
+  var domain = type === 'scene' ? 'scene' : 'script';
   var config = loadConfig();
   if (!config.baseUrl || !config.token) {
     console.log('executeScript: no config, aborting');
@@ -404,7 +413,7 @@ function executeScript(scriptKey) {
   }
 
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', config.baseUrl + '/api/services/script/turn_on', true);
+  xhr.open('POST', config.baseUrl + '/api/services/' + domain + '/turn_on', true);
   xhr.setRequestHeader('Authorization', 'Bearer ' + config.token);
   xhr.setRequestHeader('Content-Type', 'application/json');
   xhr.timeout = EXECUTE_TIMEOUT_MS;
@@ -421,7 +430,7 @@ function executeScript(scriptKey) {
   xhr.ontimeout = function() {
     sendResult(0, 'Timeout');
   };
-  xhr.send(JSON.stringify({ entity_id: 'script.' + scriptKey }));
+  xhr.send(JSON.stringify({ entity_id: domain + '.' + scriptKey }));
 }
 
 /**
@@ -437,9 +446,10 @@ function fetchScripts() {
 
   var generation = ++fetchGeneration;
 
-  // Every script entity is executable via script.turn_on (entity-based, so
-  // renames / entity-id overrides / duplicates work too), so the browse
-  // list is authoritative: one template call, no registry round-trip.
+  // Every script/scene entity is executable via <domain>.turn_on
+  // (entity-based, so renames / entity-id overrides / duplicates work too),
+  // so the browse list is authoritative: one template call, no registry
+  // round-trip.
   var xhr = new XMLHttpRequest();
   xhr.open('POST', config.baseUrl + '/api/template', true);
   xhr.setRequestHeader('Authorization', 'Bearer ' + config.token);
@@ -465,13 +475,14 @@ function fetchScripts() {
       sendResult(0, 'Fetch error');
     }
   };
-  xhr.send(JSON.stringify({ template: SCRIPT_BROWSE_TEMPLATE }));
+  xhr.send(JSON.stringify({ template: BROWSE_TEMPLATE }));
 }
 
 /**
- * Parse the browse response ('entity_id|name|area|labels|icon' per line) and
- * stream the results to the watch: ShortcutCount first, then one message per
- * entry. Malformed lines are skipped; the list is capped at MAX_SHORTCUTS.
+ * Parse the browse response ('entity_id|name|area|labels|icon' per line, one
+ * line per script AND scene entity; the entity_id domain selects the type)
+ * and stream the results to the watch: ShortcutCount first, then one message
+ * per entry. Malformed lines are skipped; the list is capped at MAX_SHORTCUTS.
  * @param {string} responseText
  */
 function handleBrowseResponse(responseText, generation) {
@@ -490,23 +501,31 @@ function handleBrowseResponse(responseText, generation) {
       continue;
     }
     var entityId = parts[0].trim();
-    if (entityId.indexOf('script.') !== 0) {
-      // Not a script entity_id — cannot derive a key.
-      console.log('browse: skipping non-script entity: ' + entityId);
+    var type = null;
+    if (entityId.indexOf('script.') === 0) {
+      type = 'script';
+    } else if (entityId.indexOf('scene.') === 0) {
+      type = 'scene';
+    }
+    if (!type) {
+      // Not a script/scene entity_id — cannot derive a key.
+      console.log('browse: skipping unsupported entity: ' + entityId);
       continue;
     }
-    var key = entityId.slice('script.'.length);
+    var key = entityId.slice(type.length + 1);
     var name = parts[1] || key;
-    // Scripts without an icon attribute default to HA's script glyph
-    // (mdi:script-text); the category line shows the bare mdi name.
+    // Entities without an icon attribute fall back to the HA domain default
+    // (mdi:script-text for scripts, mdi:palette for scenes — the frontend's
+    // domain icons); the category line shows the bare mdi name.
     var rawIcon = (parts[4] || '').trim();
     scripts.push({
+      type: type,
       key: key,
       name: name,
       area: parts[2],
       labels: parts[3],
       icon: mdiToIndex(rawIcon),
-      iconName: rawIcon ? rawIcon.replace(/^mdi:/, '') : 'script-text'
+      iconName: rawIcon ? rawIcon.replace(/^mdi:/, '') : (type === 'scene' ? 'palette' : 'script-text')
     });
     if (scripts.length >= MAX_SHORTCUTS) {
       break;
@@ -556,6 +575,7 @@ function sendScriptEntry(scripts, index, generation) {
   dict.ScriptLabels = script.labels;
   dict.ScriptIcon = script.icon;
   dict.ScriptIconName = script.iconName || '';
+  dict.ScriptType = script.type;
   Pebble.sendAppMessage(dict, function() {
     sendScriptEntry(scripts, index + 1, generation);
   }, function(err) {
@@ -655,8 +675,9 @@ Pebble.addEventListener('appmessage', function(e) {
   var scriptKey = payloadValue(payload, 'ScriptKey');
 
   if (scriptKey !== undefined && scriptKey !== null && scriptKey !== '') {
-    console.log('appmessage: executing script');
-    executeScript(String(scriptKey));
+    var type = payloadValue(payload, 'ScriptType');
+    console.log('appmessage: executing ' + (type === 'scene' ? 'scene' : 'script'));
+    executeScript(String(scriptKey), type);
     return;
   }
 

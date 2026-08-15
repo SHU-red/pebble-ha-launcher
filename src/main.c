@@ -223,17 +223,31 @@ static uint32_t icon_resource_white(uint8_t idx) {
 }
 
 // ---------------------------------------------------------------------------
+// Type symbols: '$' (script, a plain ASCII glyph) and a filled play triangle
+// (scene, drawn via GPath — U+25B6 is not covered by the system fonts).
+// One shared path, repositioned with gpath_move_to per draw.
+// ---------------------------------------------------------------------------
+
+static const GPathInfo SCENE_TRI_PATH_INFO = {
+  .num_points = 3,
+  .points = (GPoint[]) { { 0, -4 }, { 0, 4 }, { 8, 0 } },
+};
+
+static GPath *s_scene_tri = NULL;
+
+// ---------------------------------------------------------------------------
 // Persisted shortcut storage
 // ---------------------------------------------------------------------------
 
 typedef struct {
   char key[64];
+  uint8_t type;     // 0 = script, 1 = scene (HA domain of the shortcut)
   char name[48];
   char area[32];
   uint8_t icon_idx;
-  uint8_t missing;  // 1 = script no longer exists in Home Assistant
+  uint8_t missing;  // 1 = entity no longer exists in Home Assistant
   uint8_t confirm;  // 1 = require approval before executing
-  char labels[64];  // HA script labels (tags), comma-joined
+  char labels[64];  // HA entity labels (tags), comma-joined
   char icon_name[40]; // mdi icon name without prefix (category line)
 } Shortcut;
 
@@ -251,16 +265,40 @@ static int32_t s_autoclose_seconds; // 0 = never close automatically
 
 static AppTimer *s_autoclose_timer;
 
-static int32_t shortcut_index_for_key(const char *key) {
+//! A shortcut's identity is (type, key): scene.pebble_test and
+//! script.pebble_test coexist as distinct shortcuts.
+static const char *TYPE_DOMAIN(uint8_t type) {
+  return type ? "scene" : "script";
+}
+
+//! Write the full entity id ("script.<key>" / "scene.<key>") of a shortcut.
+static void shortcut_entity_id(const Shortcut *sc, char *buf, size_t len) {
+  snprintf(buf, len, "%s.%s", TYPE_DOMAIN(sc->type), sc->key);
+}
+
+static int32_t shortcut_index_for_type(uint8_t type, const char *key) {
   if (!key || !key[0]) {
     return -1;
   }
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
-    if (strcmp(s_shortcuts[i].key, key) == 0) {
+    if (s_shortcuts[i].type == type && strcmp(s_shortcuts[i].key, key) == 0) {
       return (int32_t)i;
     }
   }
   return -1;
+}
+
+//! Look up a shortcut by its full entity id ("script.<key>" / "scene.<key>").
+static int32_t shortcut_index_for_entity(const char *entity_id) {
+  if (!entity_id || !entity_id[0]) {
+    return -1;
+  }
+  const char *dot = strchr(entity_id, '.');
+  if (!dot || dot == entity_id || !dot[1]) {
+    return -1;
+  }
+  uint8_t type = (strncmp(entity_id, "scene.", 6) == 0) ? 1 : 0;
+  return shortcut_index_for_type(type, dot + 1);
 }
 
 static void persist_save(void) {
@@ -287,6 +325,7 @@ static void persist_load(void) {
     memset(sc, 0, sizeof(Shortcut)); // new fields (labels/icon_name) must be clean
     int n = persist_read_data(PERSIST_KEY_SHORTCUT_BASE + i, sc, sizeof(Shortcut));
     if (n < (int)sizeof(Shortcut)) {
+      sc->type = 0;    // pre-scene blobs are all scripts
       sc->missing = 0; // pre-missing / missing-era blobs lack these bytes
       sc->confirm = 0;
     }
@@ -364,10 +403,10 @@ static char s_dialog_text_buf[128];
 static uint8_t s_pulse_phase;
 static GColor s_dialog_color;
 
-static void start_execute(const char *key);
+static void start_execute(const char *entity_id);
 
 typedef struct {
-  char key[64];
+  char entity_id[72]; // full entity id ("script.<key>" / "scene.<key>")
   char name[48];
 } ConfirmCtx;
 
@@ -472,7 +511,7 @@ static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
   if (s_dialog_delete) {
     // Missing-in-HA prompt: SELECT deletes the shortcut.
     dialog_dismiss_cb(NULL);
-    delete_shortcut_idx(shortcut_index_for_key(s_confirm_ctx.key));
+    delete_shortcut_idx(shortcut_index_for_entity(s_confirm_ctx.entity_id));
     return;
   }
   if (!s_dialog_confirm) return;
@@ -481,7 +520,7 @@ static void dialog_confirm_select(ClickRecognizerRef rec, void *ctx) {
   // the standard execute flow so the main menu shows the exec overlay
   // exactly as when executing without confirmation.
   dialog_dismiss_cb(NULL);
-  start_execute(s_confirm_ctx.key);
+  start_execute(s_confirm_ctx.entity_id);
 }
 
 static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
@@ -591,9 +630,10 @@ static void dialog_prepare(GColor color, const char *text) {
 //! Remember the shortcut the dialog is about (name for the prompt, key for
 //! the action) — shared by the confirm and delete prompts.
 static void dialog_capture(const Shortcut *sc) {
-  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%s",
-           sc->name[0] ? sc->name : sc->key);
-  snprintf(s_confirm_ctx.key, sizeof(s_confirm_ctx.key), "%s", sc->key);
+  // Precision-bound: the key fallback can exceed the name buffer.
+  snprintf(s_confirm_ctx.name, sizeof(s_confirm_ctx.name), "%.*s",
+           (int)sizeof(s_confirm_ctx.name) - 1, sc->name[0] ? sc->name : sc->key);
+  shortcut_entity_id(sc, s_confirm_ctx.entity_id, sizeof(s_confirm_ctx.entity_id));
 }
 
 static void dialog_show_confirm(const Shortcut *sc) {
@@ -656,19 +696,23 @@ static void dialog_unload(Window *window) {
 // Execute flow
 // ---------------------------------------------------------------------------
 
-static void start_execute(const char *key);
+static void start_execute(const char *entity_id);
 
 static void execute_shortcut(const Shortcut *sc) {
   if (sc->confirm) {
     dialog_show_confirm(sc);
   } else {
-    start_execute(sc->key);
+    char entity_id[72];
+    shortcut_entity_id(sc, entity_id, sizeof(entity_id));
+    start_execute(entity_id);
   }
 }
 
-static void start_execute(const char *key) {
+//! Kick off an execution by full entity id. The type is derived from the
+//! domain prefix and forwarded so the JS posts to the right turn_on service.
+static void start_execute(const char *entity_id) {
   cancel_autoclose(); // a new execution supersedes any pending auto-close
-  int32_t idx = shortcut_index_for_key(key);
+  int32_t idx = shortcut_index_for_entity(entity_id);
   if (idx >= 0) {
     clear_exec_overlay();
     s_exec_row = 1 + (int32_t)idx;
@@ -676,10 +720,14 @@ static void start_execute(const char *key) {
     s_exec_error[0] = '\0';
     menu_layer_reload_data(s_main_menu);
   }
+  const char *dot = strchr(entity_id, '.');
+  const char *key = dot ? dot + 1 : entity_id;
+  uint8_t type = (strncmp(entity_id, "scene.", 6) == 0) ? 1 : 0;
   DictionaryIterator *iter;
   AppMessageResult res = app_message_outbox_begin(&iter);
   if (res == APP_MSG_OK) {
     dict_write_cstring(iter, MESSAGE_KEY_ScriptKey, key);
+    dict_write_cstring(iter, MESSAGE_KEY_ScriptType, TYPE_DOMAIN(type));
     res = app_message_outbox_send();
   }
   if (res != APP_MSG_OK) {
@@ -699,13 +747,14 @@ static void start_execute(const char *key) {
 
 typedef struct {
   char key[64];
+  uint8_t type;     // 0 = script, 1 = scene
   char name[48];
   char area[32];
   char labels[64];
   uint8_t icon_idx;
   char icon_name[40];
   uint8_t cycle;  // 0 = OFF, 1 = ON, 2 = CONFIRM (transient, from confirm flag)
-  uint8_t missing; // 1 = script no longer exists in Home Assistant
+  uint8_t missing; // 1 = entity no longer exists in Home Assistant
 } ScriptEntry;
 
 static ScriptEntry s_scripts[MAX_SHORTCUTS];
@@ -737,17 +786,17 @@ static void edit_commit_pending(void) {
     memset(&s_pending, 0, sizeof(s_pending));
     return;
   }
-  // Picked scripts show ON (runs directly) or CONFIRM (asks first); others OFF.
-  int32_t idx = shortcut_index_for_key(s_pending.key);
+  // Picked shortcuts show ON (runs directly) or CONFIRM (asks first); others OFF.
+  int32_t idx = shortcut_index_for_type(s_pending.type, s_pending.key);
   s_pending.cycle = (idx >= 0) ? (s_shortcuts[idx].confirm ? 2 : 1) : 0;
   s_scripts[s_script_count++] = s_pending;
   memset(&s_pending, 0, sizeof(s_pending));
   s_pending_active = false;
 }
 
-//! Collect one script entry from an incoming message. Entries arrive as
-//! {ScriptName, ScriptKey, ScriptArea, ScriptLabels, ScriptIcon}; a new
-//! ScriptName commits the previous entry and starts the next one.
+//! Collect one script/scene entry from an incoming message. Entries arrive as
+//! {ScriptName, ScriptKey, ScriptType, ScriptArea, ScriptLabels, ScriptIcon};
+//! a new ScriptName commits the previous entry and starts the next one.
 static void edit_collect_script(DictionaryIterator *iter) {
   Tuple *t;
   if ((t = dict_find(iter, MESSAGE_KEY_ScriptName))) {
@@ -760,6 +809,9 @@ static void edit_collect_script(DictionaryIterator *iter) {
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ScriptKey))) {
     snprintf(s_pending.key, sizeof(s_pending.key), "%s", t->value->cstring);
+  }
+  if ((t = dict_find(iter, MESSAGE_KEY_ScriptType))) {
+    s_pending.type = (strcmp(t->value->cstring, "scene") == 0) ? 1 : 0;
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ScriptArea))) {
     snprintf(s_pending.area, sizeof(s_pending.area), "%s", t->value->cstring);
@@ -796,7 +848,7 @@ static uint16_t refresh_shortcut_metadata(void) {
   }
   uint16_t updated = 0;
   for (uint16_t j = 0; j < s_script_count; j++) {
-    int32_t idx = shortcut_index_for_key(s_scripts[j].key);
+    int32_t idx = shortcut_index_for_type(s_scripts[j].type, s_scripts[j].key);
     if (idx >= 0) {
       Shortcut *sc = &s_shortcuts[idx];
       snprintf(sc->name, sizeof(sc->name), "%s",
@@ -875,7 +927,10 @@ static void edit_fetch_done(void) {
     }
     bool present = false;
     for (uint16_t j = 0; j < s_script_count; j++) {
-      if (strcmp(s_scripts[j].key, s_shortcuts[i].key) == 0) {
+      // Type matters: a scene with the same key does not resurrect a
+      // missing script shortcut (and vice versa).
+      if (s_scripts[j].type == s_shortcuts[i].type &&
+          strcmp(s_scripts[j].key, s_shortcuts[i].key) == 0) {
         present = true;
         break;
       }
@@ -886,6 +941,7 @@ static void edit_fetch_done(void) {
     ScriptEntry e;
     memset(&e, 0, sizeof(e));
     snprintf(e.key, sizeof(e.key), "%s", s_shortcuts[i].key);
+    e.type = s_shortcuts[i].type;
     snprintf(e.name, sizeof(e.name), "%s",
              s_shortcuts[i].name[0] ? s_shortcuts[i].name : s_shortcuts[i].key);
     snprintf(e.area, sizeof(e.area), "%s", s_shortcuts[i].area);
@@ -904,22 +960,24 @@ static void edit_fetch_done(void) {
 // Remember where shortcuts were removed, so a re-pick (cycling through OFF)
 // restores the previous launcher position instead of appending at the end —
 // the user's set order must never change outside the Change Order screen.
-static char s_removed_keys[8][64];
+// Keyed by full entity id so a scene and a script sharing a key name each
+// restore their own slot.
+static char s_removed_entities[8][72];
 static int32_t s_removed_pos[8];
 static uint8_t s_removed_next;
 
-static int32_t removed_position(const char *key) {
+static int32_t removed_position(const char *entity_id) {
   for (uint8_t i = 0; i < 8; i++) {
-    if (s_removed_keys[i][0] && strcmp(s_removed_keys[i], key) == 0) {
+    if (s_removed_entities[i][0] && strcmp(s_removed_entities[i], entity_id) == 0) {
       return s_removed_pos[i];
     }
   }
   return -1;
 }
 
-static void remember_removed(const char *key, int32_t pos) {
+static void remember_removed(const char *entity_id, int32_t pos) {
   uint8_t slot = s_removed_next++ % 8;
-  snprintf(s_removed_keys[slot], sizeof(s_removed_keys[slot]), "%s", key);
+  snprintf(s_removed_entities[slot], sizeof(s_removed_entities[slot]), "%s", entity_id);
   s_removed_pos[slot] = pos;
 }
 
@@ -929,7 +987,9 @@ static void delete_shortcut_idx(int32_t idx) {
   if (idx < 0 || idx >= s_shortcut_count) {
     return;
   }
-  remember_removed(s_shortcuts[idx].key, idx);
+  char entity_id[72];
+  shortcut_entity_id(&s_shortcuts[idx], entity_id, sizeof(entity_id));
+  remember_removed(entity_id, idx);
   memmove(&s_shortcuts[idx], &s_shortcuts[idx + 1],
           (size_t)(s_shortcut_count - (uint16_t)idx - 1) * sizeof(Shortcut));
   s_shortcut_count--;
@@ -939,15 +999,17 @@ static void delete_shortcut_idx(int32_t idx) {
 
 static void pick_script(uint16_t row, uint8_t confirm) {
   ScriptEntry *e = &s_scripts[row];
-  if (!e->key[0] || shortcut_index_for_key(e->key) >= 0) {
+  if (!e->key[0] || shortcut_index_for_type(e->type, e->key) >= 0) {
     return;
   }
   if (s_shortcut_count >= MAX_SHORTCUTS) {
     edit_show_status("Max 32 shortcuts", GColorRed);
     return;
   }
+  char entity_id[72];
+  snprintf(entity_id, sizeof(entity_id), "%s.%s", TYPE_DOMAIN(e->type), e->key);
   Shortcut *sc;
-  int32_t restore = removed_position(e->key);
+  int32_t restore = removed_position(entity_id);
   if (restore >= 0) {
     if (restore > (int32_t)s_shortcut_count) {
       restore = s_shortcut_count;
@@ -960,6 +1022,7 @@ static void pick_script(uint16_t row, uint8_t confirm) {
     sc = &s_shortcuts[s_shortcut_count++];
   }
   snprintf(sc->key, sizeof(sc->key), "%s", e->key);
+  sc->type = e->type;
   snprintf(sc->name, sizeof(sc->name), "%s", e->name[0] ? e->name : e->key);
   snprintf(sc->area, sizeof(sc->area), "%s", e->area);
   snprintf(sc->labels, sizeof(sc->labels), "%s", e->labels);
@@ -973,11 +1036,13 @@ static void pick_script(uint16_t row, uint8_t confirm) {
 
 static void unpick_script(uint16_t row) {
   ScriptEntry *e = &s_scripts[row];
-  int32_t idx = shortcut_index_for_key(e->key);
+  int32_t idx = shortcut_index_for_type(e->type, e->key);
   if (idx < 0) {
     return;
   }
-  remember_removed(e->key, idx);
+  char entity_id[72];
+  snprintf(entity_id, sizeof(entity_id), "%s.%s", TYPE_DOMAIN(e->type), e->key);
+  remember_removed(entity_id, idx);
   memmove(&s_shortcuts[idx], &s_shortcuts[idx + 1],
           (size_t)(s_shortcut_count - (uint16_t)idx - 1) * sizeof(Shortcut));
   s_shortcut_count--;
@@ -1124,31 +1189,58 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                      GRect(0, center - 14, bounds.size.w, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-  // Info above the bar: area, then tags (max two lines before the bar).
+  // Structured info block between the banner and the state bar: Type, Area,
+  // Tags and Category are ALWAYS shown (empty values render '—'), so every
+  // card has the same predictable layout. The block runs into the state
+  // color band — the text is drawn on top, like before.
   int16_t w = bounds.size.w - 2 * margin;
   char row[128];
-  int16_t y = banner_h + 6;
+  int16_t y = banner_h + 4;
   graphics_context_set_text_color(ctx, GColorBlack);
-  if (e->area[0]) {
-    snprintf(row, sizeof(row), "Area: %s", e->area);
-    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+  // Type line: '$ Script' / '▶ Scene' — also the legend for the main
+  // screen's leading symbol.
+  if (e->type) {
+    if (s_scene_tri) {
+      graphics_context_set_fill_color(ctx, GColorBlack);
+      gpath_move_to(s_scene_tri, GPoint(margin + 5, y + 11));
+      gpath_draw_filled(ctx, s_scene_tri);
+    }
+    graphics_draw_text(ctx, "Scene", fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                       GRect(margin + 12, y, w - 12, 22),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  } else {
+    graphics_draw_text(ctx, "$ Script", fonts_get_system_font(FONT_KEY_GOTHIC_18),
                        GRect(margin, y, w, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    y += 24;
   }
-  if (e->labels[0]) {
-    snprintf(row, sizeof(row), "Tags: %s", e->labels);
-    graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin, y, w, 22),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  }
+  y += 20;
+  snprintf(row, sizeof(row), "Area: %s", e->area[0] ? e->area : "—");
+  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(margin, y, w, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  y += 20;
+  snprintf(row, sizeof(row), "Tags: %s", e->labels[0] ? e->labels : "—");
+  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(margin, y, w, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  y += 20;
+  // Category falls back to the HA domain default icon name.
+  snprintf(row, sizeof(row), "Category: %s",
+           e->icon_name[0] ? e->icon_name : (e->type ? "palette" : "script-text"));
+  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     GRect(margin, y, w, 22),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
-  // Below the bar: nothing but the footer — the script's icon stays a pure
+  // Below the bar: nothing but the footer — the entity's icon stays a pure
   // glyph in the banner (no icon-name text anywhere).
 
-  // Footer: entity key (like the notification timestamp line).
+  // Footer: the full entity id (script.<key> / scene.<key>, like the
+  // notification timestamp line) — distinguishes same-named scene/script
+  // rows at a glance.
+  char foot[72];
+  snprintf(foot, sizeof(foot), "%s.%s", TYPE_DOMAIN(e->type), e->key);
   graphics_context_set_text_color(ctx, GColorDarkGray);
-  graphics_draw_text(ctx, e->key, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+  graphics_draw_text(ctx, foot, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                      GRect(margin, bounds.size.h - 22, w, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
@@ -1159,7 +1251,7 @@ static void edit_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *c
   }
   ScriptEntry *e = &s_scripts[cell_index->row];
   e->cycle = (uint8_t)((e->cycle + 1) % 3);
-  int32_t idx = shortcut_index_for_key(e->key);
+  int32_t idx = shortcut_index_for_type(e->type, e->key);
   switch (e->cycle) {
     case 0:  // OFF: remove from the launcher
       if (idx >= 0) {
@@ -1685,20 +1777,43 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                          GRect(b.size.w - 24, 8, 16, 16),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     } else {
-      // Second line: <area> - <tags> to tell same-named scripts apart; only
-      // the parts HA actually provides. The icon stays a pure glyph.
-      char sub[96];
+      // Second line: <symbol> · <area> · <tags> · <category>. The type
+      // symbol ('$' script / '▶' scene) always leads, then every detail HA
+      // actually provides, joined with '·' so same-named scene/script pairs
+      // stay distinguishable.
+      char sub[192];
       sub[0] = '\0';
       if (sc->area[0]) {
         snprintf(sub, sizeof(sub), "%s", sc->area);
       }
       if (sc->labels[0]) {
         size_t l = strlen(sub);
-        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " - " : "", sc->labels);
+        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", sc->labels);
       }
-      if (sub[0]) {
-        graphics_context_set_text_color(ctx, selected ? GColorBlack : theme_muted());
+      {
+        size_t l = strlen(sub);
+        // Category falls back to the HA domain default icon name.
+        const char *category = sc->icon_name[0] ? sc->icon_name
+                             : (sc->type ? "palette" : "script-text");
+        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", category);
+      }
+      GColor sub_col = selected ? GColorBlack : theme_muted();
+      graphics_context_set_text_color(ctx, sub_col);
+      if (sc->type) {
+        // Scene: drawn play triangle (U+25B6 is not in the system fonts),
+        // then the '·'-joined details.
+        if (s_scene_tri) {
+          graphics_context_set_fill_color(ctx, sub_col);
+          gpath_move_to(s_scene_tri, GPoint(49, 36));
+          gpath_draw_filled(ctx, s_scene_tri);
+        }
         graphics_draw_text(ctx, sub, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                           GRect(56, 27, b.size.w - 62, 18),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      } else {
+        char sym[200];
+        snprintf(sym, sizeof(sym), "$ · %s", sub);
+        graphics_draw_text(ctx, sym, fonts_get_system_font(FONT_KEY_GOTHIC_14),
                            GRect(44, 27, b.size.w - 50, 18),
                            GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
       }
@@ -1972,6 +2087,8 @@ static void init(void) {
   app_message_register_outbox_failed(outbox_failed);
   app_message_open(4096, 1024);
 
+  s_scene_tri = gpath_create(&SCENE_TRI_PATH_INFO);
+
   persist_load();
 
   // Native touch navigation (the firmware's own Tier-1 MenuLayer handling),
@@ -1987,6 +2104,10 @@ static void deinit(void) {
   if (s_main_window) {
     window_destroy(s_main_window);
     s_main_window = NULL;
+  }
+  if (s_scene_tri) {
+    gpath_destroy(s_scene_tri);
+    s_scene_tri = NULL;
   }
 }
 

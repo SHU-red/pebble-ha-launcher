@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0
+
+Scenes join scripts: trigger any Home Assistant scene exactly like a script.
+
+- Picker now lists scenes alongside scripts (one merged list, same
+  OFF / ON / CONFIRM cycling, same 32-shortcut cap)
+- Execution routes by type: `scene.turn_on` / `script.turn_on`, entity-id
+  based, so renames / duplicates / same-named scene+script pairs work
+- Type visible at a glance: the main list's second line leads with a
+  symbol — `$` for scripts, a play triangle for scenes — then
+  `·`-joined area, tags and icon category
+- Shortcut edit cards always show the full classification block —
+  Type (`$ Script` / `▶ Scene`), Area, Tags, Category — with `—` for
+  empty values, plus the full entity id as footer; same-named scene/script
+  rows stay distinct
+- Category falls back to the HA domain default (script-text / palette)
+  when an entity has no icon
+- Scene/script pairs with the same key are independent shortcuts:
+  launcher slots, reorder, removed-position restore and metadata refresh
+  are all type-aware
+- Old stored shortcuts migrate cleanly (all existing entries stay scripts)
+- Fixed: browse parser no longer drops scene entities (was script-only)
+
 ## 0.3.0
 
 Launch Home Assistant scripts from your wrist, one tap.
