@@ -18,11 +18,17 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
   T·A·Tg·C, T·A·Tg, T·A, A·Tg·C, T·Tg·C — persisted on the watch
 - Fixed: scene subtitle had no divider/space between the play symbol and
   the area text (symbol touched the text); scripts already had `$ · `
-- Shortcut edit cards use a strict four-region table: banner | top split
-  (Type | Area) | state band | bottom split (Tags, one per row | Category),
-  with bold captions in light-gray cells and `—` for empty values; nothing
+- Shortcut edit cards use a strict four-region label/value table: banner |
+  top split (Type | Area) | state band | bottom split (Tags | Category) —
+  muted bold labels, black values, full-width rows, no fills, nothing
   overlaps the state band; full entity id as footer — same-named
   scene/script rows stay distinct
+- The icon is only ever shown as the banner glyph — its mdi name is no
+  longer rendered as text anywhere on the edit card
+- Category row: HA categories (entity-registry scope mapping) are exposed
+  only over WebSocket, which PebbleKit JS cannot use, so the row shows
+  `—` until HA exposes them via REST/templates; the earlier values under
+  "Category" were the entities' icon names, which is what made it confusing
 - Category falls back to the HA domain default (script-text / palette)
   when an entity has no icon
 - Scene/script pairs with the same key are independent shortcuts:

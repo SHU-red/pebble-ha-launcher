@@ -1173,8 +1173,8 @@ static void bar_animate_to(GColor to) {
 //! black info text. A full-width color band at the select-button level shows
 //! the OFF/ON/CONFIRM state (grey/green/orange) and toggles on SELECT.
 //! Four strictly separated regions: banner | top split (Type | Area) |
-//! state band | bottom split (Tags, one per row | Category) in light-gray
-//! table cells; the entity key as the footer.
+//! state band | bottom split (Tags | Category) as full-width label/value
+//! rows — muted bold labels, black values, no fills; entity key as footer.
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
@@ -1230,107 +1230,87 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
   // Strict four-region layout: banner | top split (Type | Area) | state bar
-  // | bottom split (Tags, one per row | Category). The splits are light-gray
-  // table cells; nothing overlaps the state band. Empty values render '—'.
-  // Text rects are 17px tall: Gothic 14 glyph ink spans up to 16px (e.g.
-  // descenders), and graphics_draw_text clips to its box.
-  const int16_t col_gap = 2;
-  const int16_t col_w = (bounds.size.w - 2 * margin - col_gap) / 2;
-  const int16_t cell_top = banner_h + 1;
-  const int16_t cell_h = 33; // caption (17px) + value (17px)
+  // | bottom split (Tags | Category). The splits are full-width label/value
+  // rows — muted bold labels left, black values right, no boxes, nothing
+  // overlaps the state band. Empty values render '—'. Value x-offsets are
+  // the measured GOTHIC_14_BOLD label advances + 6px gap, so each value
+  // gets the maximum remaining width. (Text rects are 16px tall: Gothic 14
+  // glyph ink spans up to 16px and graphics_draw_text clips to its box.)
   const int16_t bar_top = center - bar_h / 2;
-  const int16_t split_top = bar_top + bar_h + 4;
-  const int16_t row_h = 19;
-  int16_t rows = (bounds.size.h - 22 - 2 - split_top) / row_h;
-  if (rows < 1) {
-    rows = 1;
-  }
-  const int16_t x2 = margin + col_w + col_gap;
+  const int16_t row_top1 = banner_h + 1;              // 33
+  const int16_t row_top2 = row_top1 + 16;             // 49
+  const int16_t row_bot1 = bar_top + bar_h + 4;       // 105
+  const int16_t row_bot2 = row_bot1 + 19;             // 124
+  const GColor muted = GColorDarkGray;
 
   // ---- Top split: Type | Area ----
-  graphics_context_set_fill_color(ctx, GColorLightGray);
-  graphics_fill_rect(ctx, GRect(margin, cell_top, col_w, cell_h), 0, GCornerNone);
   graphics_context_set_text_color(ctx, GColorBlack);
   if (e->type) {
     // Scene: drawn play triangle (U+25B6 is not in the system fonts), then
     // the word — same legend as the main screen's leading symbol.
     if (s_scene_tri) {
       graphics_context_set_fill_color(ctx, GColorBlack);
-      gpath_move_to(s_scene_tri, GPoint(margin + 9, cell_top + cell_h / 2));
+      gpath_move_to(s_scene_tri, GPoint(margin + 3, row_top1 + 8));
       gpath_draw_filled(ctx, s_scene_tri);
     }
-    graphics_draw_text(ctx, "Scene", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(margin + 14, cell_top + 6, col_w - 14, 22),
+    graphics_draw_text(ctx, "Scene", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(margin + 14, row_top1, bounds.size.w - margin - 14, 16),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   } else {
-    graphics_draw_text(ctx, "$ Script", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(margin + 2, cell_top + 6, col_w - 2, 22),
+    graphics_draw_text(ctx, "$", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(margin, row_top1, 10, 16),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, "Script", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(margin + 14, row_top1, bounds.size.w - margin - 14, 16),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
 
-  // Area cell: bold caption, value below (full cell width for the value).
-  graphics_context_set_fill_color(ctx, GColorLightGray);
-  graphics_fill_rect(ctx, GRect(x2, cell_top, col_w, cell_h), 0, GCornerNone);
-  graphics_context_set_text_color(ctx, GColorBlack);
-  graphics_draw_text(ctx, "Area:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(x2 + 2, cell_top, col_w - 4, 17),
+  // Area row: 'AREA' label (31px), value right after it (max width).
+  graphics_context_set_text_color(ctx, muted);
+  graphics_draw_text(ctx, "AREA", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(margin, row_top2, 31, 16),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_context_set_text_color(ctx, GColorBlack);
   graphics_draw_text(ctx, e->area[0] ? e->area : "—",
                      fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(x2 + 2, cell_top + 16, col_w - 4, 17),
+                     GRect(margin + 37, row_top2, bounds.size.w - margin - 47, 16),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
-  // ---- Bottom split: Tags (one per row) | Category ----
-  int16_t split_h = (int16_t)(rows * row_h);
-  graphics_context_set_fill_color(ctx, GColorLightGray);
-  graphics_fill_rect(ctx, GRect(margin, split_top, col_w, split_h), 0, GCornerNone);
-  graphics_fill_rect(ctx, GRect(x2, split_top, col_w, split_h), 0, GCornerNone);
-  graphics_context_set_text_color(ctx, GColorBlack);
-
-  // Tags column: one 'Tag:' row per label, up to the rows that fit.
+  // ---- Bottom split: Tags | Category ----
+  // Tags row: labels joined with '·' (one row, ellipsis on overflow).
+  char tags[192];
+  tags[0] = '\0';
   const char *p = e->labels;
-  int16_t row = 0;
-  while (p && p[0] && row < rows) {
+  while (p && p[0]) {
     const char *comma = strchr(p, ',');
     size_t len = comma ? (size_t)(comma - p) : strlen(p);
     while (len > 0 && p[len - 1] == ' ') {
       len--;
     }
-    if (len > 48) {
-      len = 48;
-    }
-    char tag[49];
-    memcpy(tag, p, len);
-    tag[len] = '\0';
-    int16_t y = split_top + row * row_h + 1;
-    graphics_draw_text(ctx, "Tag:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(margin + 1, y, 26, 18),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    graphics_draw_text(ctx, tag, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                       GRect(margin + 27, y, col_w - 29, 18),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    row++;
+    size_t l = strlen(tags);
+    snprintf(tags + l, sizeof(tags) - l, "%s%.*s", l ? " · " : "", (int)len, p);
     p = comma ? comma + 1 : NULL;
   }
-  if (row == 0) {
-    int16_t y = split_top + 1;
-    graphics_draw_text(ctx, "Tag:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(margin + 1, y, 26, 18),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-    graphics_draw_text(ctx, "—", fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                       GRect(margin + 27, y, col_w - 29, 18),
-                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  }
-
-  // Category column: bold caption, value below. The value always exists via
-  // the HA domain-default fallback (script-text / palette).
-  int16_t y = split_top;
-  graphics_draw_text(ctx, "Category:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                     GRect(x2 + 1, y, col_w - 1, 17),
+  graphics_context_set_text_color(ctx, muted);
+  graphics_draw_text(ctx, "TAGS", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(margin, row_bot1 + 1, 32, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  graphics_draw_text(ctx, e->icon_name[0] ? e->icon_name : (e->type ? "palette" : "script-text"),
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, tags[0] ? tags : "—",
                      fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(x2 + 2, y + 16, col_w - 4, 17),
+                     GRect(margin + 38, row_bot1 + 1, bounds.size.w - margin - 48, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+
+  // Category row: HA categories (entity-registry scope mapping) are only
+  // exposed over WebSocket, which PebbleKit JS cannot use, so the value is
+  // always '—' unless a future HA release exposes them via REST/templates.
+  graphics_context_set_text_color(ctx, muted);
+  graphics_draw_text(ctx, "CATEGORY", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(margin, row_bot2 + 1, 63, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, "—", fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(margin + 69, row_bot2 + 1, bounds.size.w - margin - 79, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
   // Below the bar: nothing but the footer — the entity's icon stays a pure
