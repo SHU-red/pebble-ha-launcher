@@ -11,10 +11,11 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
 - Type visible at a glance: the main list's second line leads with a
   symbol — `$` for scripts, a play triangle for scenes — then
   `·`-joined area, tags and icon category
-- Shortcut edit cards always show the full classification block —
-  Type (`$ Script` / `▶ Scene`), Area, Tags, Category — with `—` for
-  empty values, plus the full entity id as footer; same-named scene/script
-  rows stay distinct
+- Shortcut edit cards use a strict four-region table: banner | top split
+  (Type | Area) | state band | bottom split (Tags, one per row | Category),
+  with bold captions in light-gray cells and `—` for empty values; nothing
+  overlaps the state band; full entity id as footer — same-named
+  scene/script rows stay distinct
 - Category falls back to the HA domain default (script-text / palette)
   when an entity has no icon
 - Scene/script pairs with the same key are independent shortcuts:

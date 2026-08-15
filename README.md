@@ -40,9 +40,9 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
 3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
    script and scene row shows its state — grey `OFF` (not in the launcher),
    green `ON` (runs directly), orange `CONFIRM` (asks before running) — plus
-   a full classification block that always shows Type (`$ Script` /
-   `▶ Scene`), Area, Tags and Category (`—` when empty), and the full
-   entity id as footer.
+   a four-region classification table: banner, Type/Area split, state band,
+   Tags (one per row)/Category split, with bold captions and `—` for empty
+   values; the full entity id as footer.
    Press Select to cycle the state, then run the picked shortcuts from the
    main list. The 3-dot entry row also holds Change Order, Update metadata
    and Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s). Missing

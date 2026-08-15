@@ -1130,16 +1130,17 @@ static void bar_animate_to(GColor to) {
 }
 
 //! Full-screen picker card in the style of the native Pebble notification
-//! page: white body, colored top banner (36px) with the script icon in it,
+//! page: white body, colored top banner (32px) with the entity icon in it,
 //! black info text. A full-width color band at the select-button level shows
 //! the OFF/ON/CONFIRM state (grey/green/orange) and toggles on SELECT.
-//! Above the bar: area, tags. Below: the mdi icon name, and the entity key
-//! as the footer.
+//! Four strictly separated regions: banner | top split (Type | Area) |
+//! state band | bottom split (Tags, one per row | Category) in light-gray
+//! table cells; the entity key as the footer.
 static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   ScriptEntry *e = &s_scripts[cell_index->row];
   GRect bounds = layer_get_bounds(cell_layer);
-  const int16_t banner_h = 36;
+  const int16_t banner_h = 32;
   const int16_t margin = 10;
   const int16_t bar_h = 34;
   const int16_t center = bounds.size.h / 2; // physical select-button level
@@ -1156,12 +1157,12 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   // White-glyph RGBA variant at native 32x32, composited over the accent
   // banner (GCompOpSet alpha-composites the glyph's own color).
   graphics_context_set_compositing_mode(ctx, GCompOpSet);
-  graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 2, 32, 32));
+  graphics_draw_bitmap_in_rect(ctx, icon, GRect(margin, 0, 32, 32));
   gbitmap_destroy(icon);
   graphics_context_set_text_color(ctx, GColorWhite);
   graphics_draw_text(ctx, e->name[0] ? e->name : e->key,
                      fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                     GRect(margin + 36, 8, bounds.size.w - margin - 42, 22),
+                     GRect(margin + 36, 6, bounds.size.w - margin - 42, 22),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
   // Missing-upstream badge: red circle with '!', like the main screen.
@@ -1189,46 +1190,108 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                      GRect(0, center - 14, bounds.size.w, 28),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
 
-  // Structured info block between the banner and the state bar: Type, Area,
-  // Tags and Category are ALWAYS shown (empty values render '—'), so every
-  // card has the same predictable layout. The block runs into the state
-  // color band — the text is drawn on top, like before.
-  int16_t w = bounds.size.w - 2 * margin;
-  char row[128];
-  int16_t y = banner_h + 4;
+  // Strict four-region layout: banner | top split (Type | Area) | state bar
+  // | bottom split (Tags, one per row | Category). The splits are light-gray
+  // table cells; nothing overlaps the state band. Empty values render '—'.
+  // Text rects are 17px tall: Gothic 14 glyph ink spans up to 16px (e.g.
+  // descenders), and graphics_draw_text clips to its box.
+  const int16_t col_gap = 2;
+  const int16_t col_w = (bounds.size.w - 2 * margin - col_gap) / 2;
+  const int16_t cell_top = banner_h + 1;
+  const int16_t cell_h = 33; // caption (17px) + value (17px)
+  const int16_t bar_top = center - bar_h / 2;
+  const int16_t split_top = bar_top + bar_h + 4;
+  const int16_t row_h = 19;
+  int16_t rows = (bounds.size.h - 22 - 2 - split_top) / row_h;
+  if (rows < 1) {
+    rows = 1;
+  }
+  const int16_t x2 = margin + col_w + col_gap;
+
+  // ---- Top split: Type | Area ----
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, GRect(margin, cell_top, col_w, cell_h), 0, GCornerNone);
   graphics_context_set_text_color(ctx, GColorBlack);
-  // Type line: '$ Script' / '▶ Scene' — also the legend for the main
-  // screen's leading symbol.
   if (e->type) {
+    // Scene: drawn play triangle (U+25B6 is not in the system fonts), then
+    // the word — same legend as the main screen's leading symbol.
     if (s_scene_tri) {
       graphics_context_set_fill_color(ctx, GColorBlack);
-      gpath_move_to(s_scene_tri, GPoint(margin + 5, y + 11));
+      gpath_move_to(s_scene_tri, GPoint(margin + 9, cell_top + cell_h / 2));
       gpath_draw_filled(ctx, s_scene_tri);
     }
-    graphics_draw_text(ctx, "Scene", fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin + 12, y, w - 12, 22),
+    graphics_draw_text(ctx, "Scene", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(margin + 14, cell_top + 6, col_w - 14, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   } else {
-    graphics_draw_text(ctx, "$ Script", fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                       GRect(margin, y, w, 22),
+    graphics_draw_text(ctx, "$ Script", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(margin + 2, cell_top + 6, col_w - 2, 22),
                        GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
   }
-  y += 20;
-  snprintf(row, sizeof(row), "Area: %s", e->area[0] ? e->area : "—");
-  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                     GRect(margin, y, w, 22),
+
+  // Area cell: bold caption, value below (full cell width for the value).
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, GRect(x2, cell_top, col_w, cell_h), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, "Area:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(x2 + 2, cell_top, col_w - 4, 17),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  y += 20;
-  snprintf(row, sizeof(row), "Tags: %s", e->labels[0] ? e->labels : "—");
-  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                     GRect(margin, y, w, 22),
+  graphics_draw_text(ctx, e->area[0] ? e->area : "—",
+                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(x2 + 2, cell_top + 16, col_w - 4, 17),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-  y += 20;
-  // Category falls back to the HA domain default icon name.
-  snprintf(row, sizeof(row), "Category: %s",
-           e->icon_name[0] ? e->icon_name : (e->type ? "palette" : "script-text"));
-  graphics_draw_text(ctx, row, fonts_get_system_font(FONT_KEY_GOTHIC_18),
-                     GRect(margin, y, w, 22),
+
+  // ---- Bottom split: Tags (one per row) | Category ----
+  int16_t split_h = (int16_t)(rows * row_h);
+  graphics_context_set_fill_color(ctx, GColorLightGray);
+  graphics_fill_rect(ctx, GRect(margin, split_top, col_w, split_h), 0, GCornerNone);
+  graphics_fill_rect(ctx, GRect(x2, split_top, col_w, split_h), 0, GCornerNone);
+  graphics_context_set_text_color(ctx, GColorBlack);
+
+  // Tags column: one 'Tag:' row per label, up to the rows that fit.
+  const char *p = e->labels;
+  int16_t row = 0;
+  while (p && p[0] && row < rows) {
+    const char *comma = strchr(p, ',');
+    size_t len = comma ? (size_t)(comma - p) : strlen(p);
+    while (len > 0 && p[len - 1] == ' ') {
+      len--;
+    }
+    if (len > 48) {
+      len = 48;
+    }
+    char tag[49];
+    memcpy(tag, p, len);
+    tag[len] = '\0';
+    int16_t y = split_top + row * row_h + 1;
+    graphics_draw_text(ctx, "Tag:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(margin + 1, y, 26, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, tag, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                       GRect(margin + 27, y, col_w - 29, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    row++;
+    p = comma ? comma + 1 : NULL;
+  }
+  if (row == 0) {
+    int16_t y = split_top + 1;
+    graphics_draw_text(ctx, "Tag:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(margin + 1, y, 26, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+    graphics_draw_text(ctx, "—", fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                       GRect(margin + 27, y, col_w - 29, 18),
+                       GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  }
+
+  // Category column: bold caption, value below. The value always exists via
+  // the HA domain-default fallback (script-text / palette).
+  int16_t y = split_top;
+  graphics_draw_text(ctx, "Category:", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(x2 + 1, y, col_w - 1, 17),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+  graphics_draw_text(ctx, e->icon_name[0] ? e->icon_name : (e->type ? "palette" : "script-text"),
+                     fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                     GRect(x2 + 2, y + 16, col_w - 4, 17),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 
   // Below the bar: nothing but the footer — the entity's icon stays a pure
@@ -1241,7 +1304,7 @@ static void edit_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
   snprintf(foot, sizeof(foot), "%s.%s", TYPE_DOMAIN(e->type), e->key);
   graphics_context_set_text_color(ctx, GColorDarkGray);
   graphics_draw_text(ctx, foot, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                     GRect(margin, bounds.size.h - 22, w, 18),
+                     GRect(margin, bounds.size.h - 22, bounds.size.w - 2 * margin, 18),
                      GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
 }
 
