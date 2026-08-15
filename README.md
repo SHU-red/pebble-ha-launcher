@@ -35,7 +35,8 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or
   CONFIRM (asks before running); grey / green / orange states in the picker.
   The confirm screen shows the shortcut's icon and launches only when you
-  press UP + DOWN together (BACK cancels), so a stray tap can't fire
+  press UP + DOWN together and release (BACK cancels), so a stray tap
+  can't fire and the menu selection stays put
 - **Haptic feedback** — the watch pulses on every shortcut launch and on
   every error/timeout; a "Vibrations" sub-menu setting (ON/OFF) silences
   every haptic in the app

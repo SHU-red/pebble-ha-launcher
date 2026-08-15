@@ -469,10 +469,13 @@ static char s_dialog_hint_buf[64];
 static uint8_t s_pulse_phase;
 static GColor s_dialog_color;
 
-// Raw press state for the UP+DOWN confirm chord: the confirm fires on the
-// second press while the first button is still held.
+// Raw press state for the UP+DOWN confirm chord. Pressing both arms the
+// confirmation; it executes only once both buttons are released, so no
+// held button is delivered to the main window's click recognizers when
+// the dialog pops (which would nudge the menu selection one row).
 static bool s_chord_up;
 static bool s_chord_down;
+static bool s_chord_armed;
 
 static void start_execute(const char *entity_id);
 
@@ -600,21 +603,33 @@ static void dialog_confirm_cancel(ClickRecognizerRef rec, void *ctx) {
   dialog_dismiss_cb(NULL);
 }
 
-//! Fires when both UP and DOWN are held at once. Dismiss the confirm
-//! screen and run the standard execute flow so the main menu shows the
-//! exec overlay exactly as when executing without confirmation.
+//! Pressing both UP and DOWN at once arms the confirmation; execution
+//! happens in dialog_chord_release_check once both buttons are released.
 static void dialog_chord_check(void) {
   if (!s_dialog_confirm || !s_chord_up || !s_chord_down) {
     return;
   }
   s_dialog_confirm = false;
+  s_chord_armed = true;
+}
+
+//! Both buttons were held; now that both are up, dismiss the dialog and
+//! run the standard execute flow so the main menu shows the exec overlay
+//! exactly as when executing without confirmation. Waiting for the full
+//! release keeps the pop from delivering a held button to the main menu
+//! (which would move its selection one row up/down).
+static void dialog_chord_release_check(void) {
+  if (!s_chord_armed || s_chord_up || s_chord_down) {
+    return;
+  }
+  s_chord_armed = false;
   dialog_dismiss_cb(NULL);
   start_execute(s_confirm_ctx.entity_id);
 }
 
 //! Raw UP/DOWN chord: the *_down handlers fire on press, the *_up handlers
-//! on release, so the confirm triggers exactly while both buttons are held
-//! — a stray tap on either alone (or on SELECT) can never launch.
+//! on release. A stray tap on either button alone (or on SELECT) never
+//! arms the confirm; execution waits for the release of both.
 static void dialog_chord_up_down(ClickRecognizerRef rec, void *ctx) {
   s_chord_up = true;
   dialog_chord_check();
@@ -622,6 +637,7 @@ static void dialog_chord_up_down(ClickRecognizerRef rec, void *ctx) {
 
 static void dialog_chord_up_up(ClickRecognizerRef rec, void *ctx) {
   s_chord_up = false;
+  dialog_chord_release_check();
 }
 
 static void dialog_chord_down_down(ClickRecognizerRef rec, void *ctx) {
@@ -631,6 +647,7 @@ static void dialog_chord_down_down(ClickRecognizerRef rec, void *ctx) {
 
 static void dialog_chord_down_up(ClickRecognizerRef rec, void *ctx) {
   s_chord_down = false;
+  dialog_chord_release_check();
 }
 
 static void dialog_click_config_provider(void *ctx) {
@@ -777,6 +794,7 @@ static void dialog_prepare(GColor color, const char *text) {
   dialog_cancel_timers();
   s_dialog_confirm = false;
   s_dialog_delete = false;
+  s_chord_armed = false;
   s_dialog_color = color;
   layer_mark_dirty(s_dialog_bg);
   text_layer_set_text_color(s_dialog_text, GColorWhite);

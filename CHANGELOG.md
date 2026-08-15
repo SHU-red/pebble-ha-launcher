@@ -6,8 +6,10 @@ Safer confirmations and haptic feedback.
 
 - Confirmation screen reworked: the shortcut's icon sits centered above
   the prompt, with the button hints below — no more second-SELECT trigger
-- Confirming now requires pressing UP + DOWN together (BACK still cancels),
-  so a stray tap on SELECT can never fire a shortcut accidentally
+- Confirming now requires pressing UP + DOWN together and releasing (BACK
+  still cancels), so a stray tap on SELECT can never fire a shortcut
+  accidentally; execution starts on release so the main-menu selection is
+  never nudged by the held buttons
 - The watch pulses on every shortcut launch and on every error/timeout of
   a shortcut, so you get wrist feedback even with the main menu in view
 - New "Vibrations" sub-menu setting (ON/OFF, SELECT cycles, same level as
