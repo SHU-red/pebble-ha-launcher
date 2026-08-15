@@ -20,7 +20,9 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   (name, area, tags, icon) automatically; pick the ones you use
 - **Type at a glance** — the main list leads each shortcut's detail line with
   a symbol: `$` for scripts, a play triangle for scenes, then
-  `·`-joined area, tags and icon category
+  `·`-joined area, tags and icon category. The "Info line" sub-menu setting
+  cycles which fields show (None / T·A·Tg·C / T·A·Tg / T·A / A·Tg·C /
+  T·Tg·C)
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or
   CONFIRM (asks before running); grey / green / orange states in the picker
 - **Touch-ready** — native touch navigation, opt-in from the phone settings
@@ -44,10 +46,10 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    Tags (one per row)/Category split, with bold captions and `—` for empty
    values; the full entity id as footer.
    Press Select to cycle the state, then run the picked shortcuts from the
-   main list. The 3-dot entry row also holds Change Order, Update metadata
-   and Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s). Missing
-   entities stay listed in the picker with a red `!` so you can turn them
-   off.
+   main list. The 3-dot entry row also holds Change Order, Update metadata,
+   Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s) and Info line
+   (SELECT cycles the main-screen detail fields). Missing entities stay
+   listed in the picker with a red `!` so you can turn them off.
 
 ## Build
 

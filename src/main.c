@@ -24,9 +24,43 @@
 #define PERSIST_KEY_DARKMODE 6       // int32: 1 = dark, 0 = light
 #define PERSIST_KEY_TOUCH 7          // int32: 1 = native touch navigation enabled
 #define PERSIST_KEY_AUTOCLOSE 8      // int32: seconds after success before auto-close (0 = never)
+#define PERSIST_KEY_SUBTITLE 9       // int32: main-screen info-line field mask (SUBTITLE_*)
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
+
+// ---------------------------------------------------------------------------
+// Main-screen info line: which fields the shortcut subtitle shows, in fixed
+// order (symbol · area · tags · category). A lean bitmask, cycled in the
+// sub-menu exactly like Automatic close; 0 hides the line entirely.
+// ---------------------------------------------------------------------------
+
+#define SUBTITLE_SYMBOL   0x01
+#define SUBTITLE_AREA     0x02
+#define SUBTITLE_TAGS     0x04
+#define SUBTITLE_CATEGORY 0x08
+
+#define SUBTITLE_NONE 0x00
+#define SUBTITLE_FULL (SUBTITLE_SYMBOL | SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY)
+
+static const uint8_t SUBTITLE_PRESETS[] = {
+  SUBTITLE_NONE,                                           // none
+  SUBTITLE_FULL,                                           // symbol · area · tags · category
+  SUBTITLE_SYMBOL | SUBTITLE_AREA | SUBTITLE_TAGS,         // symbol · area · tags
+  SUBTITLE_SYMBOL | SUBTITLE_AREA,                         // symbol · area
+  SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY,       // area · tags · category
+  SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY,     // symbol · tags · category
+};
+#define SUBTITLE_PRESET_COUNT ((uint8_t)(sizeof(SUBTITLE_PRESETS) / sizeof(SUBTITLE_PRESETS[0])))
+
+static bool subtitle_preset_valid(uint8_t fields) {
+  for (uint8_t i = 0; i < SUBTITLE_PRESET_COUNT; i++) {
+    if (SUBTITLE_PRESETS[i] == fields) {
+      return true;
+    }
+  }
+  return false;
+}
 
 #define REQUEST_TIMEOUT_MS 10000     // execute request timeout
 #define RESULT_DISMISS_MS 1500       // final result auto-dismiss
@@ -262,6 +296,7 @@ static uint32_t s_accent_hex;
 static bool s_dark_mode;
 static bool s_touch_enabled;
 static int32_t s_autoclose_seconds; // 0 = never close automatically
+static uint8_t s_subtitle_fields = SUBTITLE_FULL; // main-screen info line mask
 
 static AppTimer *s_autoclose_timer;
 
@@ -349,6 +384,10 @@ static void persist_load(void) {
   if (s_autoclose_seconds != 3 && s_autoclose_seconds != 5 && s_autoclose_seconds != 10 &&
       s_autoclose_seconds != 15 && s_autoclose_seconds != 30) {
     s_autoclose_seconds = 0;
+  }
+  s_subtitle_fields = (uint8_t)persist_read_int(PERSIST_KEY_SUBTITLE);
+  if (!subtitle_preset_valid(s_subtitle_fields)) {
+    s_subtitle_fields = SUBTITLE_FULL; // unset/corrupt -> full line
   }
 }
 
@@ -1458,11 +1497,13 @@ static int32_t s_reorder_held = -1;
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 4;
+  return 5;
 }
 
 static const char *autoclose_label(int32_t seconds);
 static void autoclose_cycle(void);
+static const char *subtitle_label(uint8_t fields);
+static void subtitle_cycle(void);
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                          void *callback_context) {
@@ -1475,10 +1516,14 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
   } else if (cell_index->row == 2) {
     menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
                          "Refresh names, icons and labels from Home Assistant", NULL);
-  } else {
+  } else if (cell_index->row == 3) {
     char sub[48];
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
     menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
+  } else {
+    char sub[48];
+    snprintf(sub, sizeof(sub), "%s - SELECT cycles", subtitle_label(s_subtitle_fields));
+    menu_cell_basic_draw(ctx, cell_layer, "Info line", sub, NULL);
   }
 }
 
@@ -1489,8 +1534,10 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     push_reorder_window();
   } else if (cell_index->row == 2) {
     push_update_window();
-  } else {
+  } else if (cell_index->row == 3) {
     autoclose_cycle();
+  } else {
+    subtitle_cycle();
   }
 }
 
@@ -1556,6 +1603,37 @@ static void autoclose_cycle(void) {
   }
   s_autoclose_seconds = AUTOCLOSE_OPTIONS[idx];
   persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
+  vibes_short_pulse();
+  menu_layer_reload_data(s_sub_menu);
+}
+
+// ---------------------------------------------------------------------------
+// Info line: which fields the main shortcut subtitle shows, cycled on SELECT
+// in the sub-menu (no extra settings screen), like Automatic close.
+// ---------------------------------------------------------------------------
+
+//! Compact preset label: T = type symbol, A = area, Tg = tags, C = category.
+static const char *subtitle_label(uint8_t fields) {
+  switch (fields) {
+    case SUBTITLE_FULL: return "T·A·Tg·C";
+    case SUBTITLE_SYMBOL | SUBTITLE_AREA | SUBTITLE_TAGS: return "T·A·Tg";
+    case SUBTITLE_SYMBOL | SUBTITLE_AREA: return "T·A";
+    case SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "A·Tg·C";
+    case SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "T·Tg·C";
+    default: return "none";
+  }
+}
+
+static void subtitle_cycle(void) {
+  uint8_t idx = 0;
+  for (uint8_t i = 0; i < SUBTITLE_PRESET_COUNT; i++) {
+    if (SUBTITLE_PRESETS[i] == s_subtitle_fields) {
+      idx = (uint8_t)((i + 1) % SUBTITLE_PRESET_COUNT);
+      break;
+    }
+  }
+  s_subtitle_fields = SUBTITLE_PRESETS[idx];
+  persist_write_int(PERSIST_KEY_SUBTITLE, (int32_t)s_subtitle_fields);
   vibes_short_pulse();
   menu_layer_reload_data(s_sub_menu);
 }
@@ -1840,45 +1918,58 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
                          GRect(b.size.w - 24, 8, 16, 16),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
     } else {
-      // Second line: <symbol> · <area> · <tags> · <category>. The type
-      // symbol ('$' script / '▶' scene) always leads, then every detail HA
-      // actually provides, joined with '·' so same-named scene/script pairs
-      // stay distinguishable.
-      char sub[192];
-      sub[0] = '\0';
-      if (sc->area[0]) {
-        snprintf(sub, sizeof(sub), "%s", sc->area);
-      }
-      if (sc->labels[0]) {
-        size_t l = strlen(sub);
-        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", sc->labels);
-      }
-      {
-        size_t l = strlen(sub);
-        // Category falls back to the HA domain default icon name.
-        const char *category = sc->icon_name[0] ? sc->icon_name
-                             : (sc->type ? "palette" : "script-text");
-        snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", category);
-      }
-      GColor sub_col = selected ? GColorBlack : theme_muted();
-      graphics_context_set_text_color(ctx, sub_col);
-      if (sc->type) {
-        // Scene: drawn play triangle (U+25B6 is not in the system fonts),
-        // then the '·'-joined details.
-        if (s_scene_tri) {
-          graphics_context_set_fill_color(ctx, sub_col);
-          gpath_move_to(s_scene_tri, GPoint(49, 36));
-          gpath_draw_filled(ctx, s_scene_tri);
+      // Second line: the Info-line setting picks which fields show, in
+      // fixed order <symbol> · <area> · <tags> · <category> (0 = hidden).
+      // The symbol always leads, followed by a '·' divider, so on overflow
+      // the trailing ellipsis keeps the beginning fixed.
+      uint8_t fields = s_subtitle_fields;
+      if (fields) {
+        bool sym = (fields & SUBTITLE_SYMBOL) != 0;
+        char sub[192];
+        sub[0] = '\0';
+        if ((fields & SUBTITLE_AREA) && sc->area[0]) {
+          snprintf(sub, sizeof(sub), "%s", sc->area);
         }
-        graphics_draw_text(ctx, sub, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                           GRect(56, 27, b.size.w - 62, 18),
-                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
-      } else {
-        char sym[200];
-        snprintf(sym, sizeof(sym), "$ · %s", sub);
-        graphics_draw_text(ctx, sym, fonts_get_system_font(FONT_KEY_GOTHIC_14),
-                           GRect(44, 27, b.size.w - 50, 18),
-                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+        if ((fields & SUBTITLE_TAGS) && sc->labels[0]) {
+          size_t l = strlen(sub);
+          snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", sc->labels);
+        }
+        if (fields & SUBTITLE_CATEGORY) {
+          size_t l = strlen(sub);
+          // Category falls back to the HA domain default icon name.
+          const char *category = sc->icon_name[0] ? sc->icon_name
+                               : (sc->type ? "palette" : "script-text");
+          snprintf(sub + l, sizeof(sub) - l, "%s%s", sub[0] ? " · " : "", category);
+        }
+        GColor sub_col = selected ? GColorBlack : theme_muted();
+        graphics_context_set_text_color(ctx, sub_col);
+        if (sym && sc->type) {
+          // Scene: drawn play triangle (U+25B6 is not in the system fonts),
+          // then a '·' divider before the fields — the triangle ends at
+          // x=53, the text starts at x=57, so they never touch.
+          if (s_scene_tri) {
+            graphics_context_set_fill_color(ctx, sub_col);
+            gpath_move_to(s_scene_tri, GPoint(45, 36));
+            gpath_draw_filled(ctx, s_scene_tri);
+          }
+          if (sub[0]) {
+            char s2[200];
+            snprintf(s2, sizeof(s2), "· %s", sub);
+            graphics_draw_text(ctx, s2, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                               GRect(57, 27, b.size.w - 63, 18),
+                               GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+          }
+        } else if (sym) {
+          char s2[200];
+          snprintf(s2, sizeof(s2), sub[0] ? "$ · %s" : "$", sub);
+          graphics_draw_text(ctx, s2, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                             GRect(44, 27, b.size.w - 50, 18),
+                             GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+        } else {
+          graphics_draw_text(ctx, sub, fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                             GRect(44, 27, b.size.w - 50, 18),
+                             GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+        }
       }
     }
   } else {

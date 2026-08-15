@@ -10,7 +10,14 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
   based, so renames / duplicates / same-named scene+script pairs work
 - Type visible at a glance: the main list's second line leads with a
   symbol — `$` for scripts, a play triangle for scenes — then
-  `·`-joined area, tags and icon category
+  `·`-joined area, tags and icon category; the symbol is always followed
+  by a `·` divider and overflow truncates at the end, so the beginning of
+  the line stays fixed
+- New "Info line" sub-menu setting (SELECT cycles, like Automatic close):
+  choose which fields the main-screen line shows — None,
+  T·A·Tg·C, T·A·Tg, T·A, A·Tg·C, T·Tg·C — persisted on the watch
+- Fixed: scene subtitle had no divider/space between the play symbol and
+  the area text (symbol touched the text); scripts already had `$ · `
 - Shortcut edit cards use a strict four-region table: banner | top split
   (Type | Area) | state band | bottom split (Tags, one per row | Category),
   with bold captions in light-gray cells and `—` for empty values; nothing
