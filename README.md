@@ -20,7 +20,7 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   (name, area, tags, icon) automatically; pick the ones you use
 - **Type at a glance** — the main list leads each shortcut's detail line with
   a symbol: `$` for scripts, a play triangle for scenes, then
-  `·`-joined area, tags and icon category. The "Info line" sub-menu setting
+  `·`-joined area, tags and icon name. The "Info line" sub-menu setting
   cycles which fields show (None / T·A·Tg·C / T·A·Tg / T·A / A·Tg·C /
   T·Tg·C)
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or

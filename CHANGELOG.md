@@ -10,7 +10,7 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
   based, so renames / duplicates / same-named scene+script pairs work
 - Type visible at a glance: the main list's second line leads with a
   symbol — `$` for scripts, a play triangle for scenes — then
-  `·`-joined area, tags and icon category; the symbol is always followed
+  `·`-joined area, tags and icon name; the symbol is always followed
   by a `·` divider and overflow truncates at the end, so the beginning of
   the line stays fixed
 - New "Info line" sub-menu setting (SELECT cycles, like Automatic close):
