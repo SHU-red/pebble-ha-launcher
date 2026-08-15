@@ -15,8 +15,10 @@ Scenes join scripts: trigger any Home Assistant scene exactly like a script.
   the line stays fixed
 - New "Info line" sub-menu setting (SELECT cycles, like Automatic close):
   choose which fields the main-screen line shows — None, T·A·Tg·C,
-  T·A·Tg, T·A, A·Tg·C, T·Tg·C or `name` (only the name, 24pt bold and
-  centered, no icon/subtitle) — persisted on the watch
+  T·A·Tg, T·A, A·Tg·C, T·Tg·C, `none - only name` (only the name, 24pt
+  bold and centered, no icon/subtitle) or `none - big name` (icon plus
+  left-aligned name, 24pt, vertically centered, no subtitle) — persisted
+  on the watch
 - Fixed: scene subtitle had no divider/space between the play symbol and
   the area text (symbol touched the text); scripts already had `$ · `
 - Shortcut edit cards use a strict four-region label/value table: banner |

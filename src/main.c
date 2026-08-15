@@ -42,7 +42,8 @@
 
 #define SUBTITLE_NONE 0x00
 #define SUBTITLE_FULL (SUBTITLE_SYMBOL | SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY)
-#define SUBTITLE_NAME 0x10 // special: name only, big and centered, no icon
+#define SUBTITLE_NAME 0x10     // special: name only, big and centered, no icon
+#define SUBTITLE_BIGNAME 0x20  // special: icon + left-aligned name, big, no subtitle
 
 static const uint8_t SUBTITLE_PRESETS[] = {
   SUBTITLE_NONE,                                           // none
@@ -51,7 +52,8 @@ static const uint8_t SUBTITLE_PRESETS[] = {
   SUBTITLE_SYMBOL | SUBTITLE_AREA,                         // symbol · area
   SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY,       // area · tags · category
   SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY,     // symbol · tags · category
-  SUBTITLE_NAME,                                           // name only (big, centered)
+  SUBTITLE_NAME,                                           // none - only name (big, centered)
+  SUBTITLE_BIGNAME,                                        // none - big name (icon + big, left)
 };
 #define SUBTITLE_PRESET_COUNT ((uint8_t)(sizeof(SUBTITLE_PRESETS) / sizeof(SUBTITLE_PRESETS[0])))
 
@@ -1505,9 +1507,9 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
     menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
   } else {
-    char sub[48];
-    snprintf(sub, sizeof(sub), "%s - SELECT cycles", subtitle_label(s_subtitle_fields));
-    menu_cell_basic_draw(ctx, cell_layer, "Info line", sub, NULL);
+    // The preset names ('none - only name', ...) are longer than the
+    // autoclose labels, so no ' - SELECT cycles' hint here.
+    menu_cell_basic_draw(ctx, cell_layer, "Info line", subtitle_label(s_subtitle_fields), NULL);
   }
 }
 
@@ -1604,7 +1606,8 @@ static const char *subtitle_label(uint8_t fields) {
     case SUBTITLE_SYMBOL | SUBTITLE_AREA: return "T·A";
     case SUBTITLE_AREA | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "A·Tg·C";
     case SUBTITLE_SYMBOL | SUBTITLE_TAGS | SUBTITLE_CATEGORY: return "T·Tg·C";
-    case SUBTITLE_NAME: return "name";
+    case SUBTITLE_NAME: return "none - only name";
+    case SUBTITLE_BIGNAME: return "none - big name";
     default: return "none";
   }
 }
@@ -1857,7 +1860,7 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
           exec ? (selected ? GColorBlack : exec_col)
                : (selected ? GColorBlack : theme_fg()));
       graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-                         GRect(8, 8, b.size.w - 16, 26),
+                         GRect(8, 5, b.size.w - 16, 28),
                          GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
       if (exec && exec_failed) {
         graphics_context_set_text_color(ctx, selected ? GColorBlack : exec_col);
@@ -1894,6 +1897,36 @@ static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cel
     graphics_context_set_compositing_mode(ctx, GCompOpSet);
     graphics_draw_bitmap_in_rect(ctx, icon, GRect(6, (b.size.h - 32) / 2, 32, 32));
     gbitmap_destroy(icon);
+
+    // Info line "none - big name" preset: the icon stays on the left, the
+    // name is left-aligned like "none" but larger (24pt) and vertically
+    // centered; no subtitle. The exec state icon still replaces the glyph.
+    if (s_subtitle_fields == SUBTITLE_BIGNAME) {
+      const char *label = exec
+          ? (exec_failed ? "FAILED" : (s_exec_state == EXEC_DONE ? "DONE" : "LAUNCHING"))
+          : (sc->name[0] ? sc->name : sc->key);
+      graphics_context_set_text_color(ctx,
+          exec ? (selected ? GColorBlack : exec_col)
+               : (selected ? GColorBlack : theme_fg()));
+      graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                         GRect(44, 5, b.size.w - 50, 28),
+                         GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      if (exec && exec_failed) {
+        graphics_context_set_text_color(ctx, selected ? GColorBlack : exec_col);
+        graphics_draw_text(ctx, s_exec_error[0] ? s_exec_error : "Error",
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14),
+                           GRect(44, 33, b.size.w - 50, 14),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentLeft, NULL);
+      } else if (!exec && sc->missing) {
+        graphics_context_set_fill_color(ctx, GColorRed);
+        graphics_fill_circle(ctx, GPoint(b.size.w - 16, 16), 8);
+        graphics_context_set_text_color(ctx, GColorWhite);
+        graphics_draw_text(ctx, "!", fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(b.size.w - 24, 8, 16, 16),
+                           GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      }
+      return;
+    }
 
     const char *title;
     if (exec) {

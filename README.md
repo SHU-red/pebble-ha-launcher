@@ -22,8 +22,8 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   a symbol: `$` for scripts, a play triangle for scenes, then
   `·`-joined area, tags and icon name. The "Info line" sub-menu setting
   cycles which fields show (None / T·A·Tg·C / T·A·Tg / T·A / A·Tg·C /
-  T·Tg·C / name — the last shows only the shortcut name, bigger and
-  centered)
+  T·Tg·C / none - only name — the name alone, 24pt, centered / none - big
+  name — icon plus a 24pt left-aligned name)
 - **Per-shortcut confirmation** — each shortcut is OFF, ON (runs directly) or
   CONFIRM (asks before running); grey / green / orange states in the picker
 - **Touch-ready** — native touch navigation, opt-in from the phone settings
