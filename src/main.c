@@ -398,7 +398,10 @@ static void persist_load(void) {
   s_accent = GColorFromHEX(s_accent_hex);
   s_accent_argb = s_accent.argb;
   s_dark_mode = persist_read_int(PERSIST_KEY_DARKMODE) != 0;
-  s_touch_enabled = persist_read_int(PERSIST_KEY_TOUCH) != 0;
+  // Touch navigation ON by default (the toggle is an escape hatch); only an
+  // explicit stored OFF disables it.
+  s_touch_enabled = !persist_exists(PERSIST_KEY_TOUCH) ||
+                    persist_read_int(PERSIST_KEY_TOUCH) != 0;
   s_autoclose_seconds = persist_read_int(PERSIST_KEY_AUTOCLOSE);
   // Whitelist: only the settings-page choices are valid; anything else = never.
   if (s_autoclose_seconds != 3 && s_autoclose_seconds != 5 && s_autoclose_seconds != 10 &&
@@ -1999,16 +2002,191 @@ static int16_t main_get_cell_height(MenuLayer *menu_layer, MenuIndex *cell_index
   return cell_index->row == 0 ? 15 : 48;
 }
 
+// ---------------------------------------------------------------------------
+// Main-menu pull-down gesture (touch). The sub-menu can only be entered by a
+// pull that STARTED with the menu CONTENT at its very top (the real scroll
+// offset — the touch bridge scrolls the content without moving the selection
+// on this firmware, so the selection index is not a reliable signal) and the
+// finger in the top band of the screen, and was RELEASED while armed: once
+// the downward drag crosses PULL_ARM_DIST the narrow 3-dot row inverts to
+// the accent fill — the "releasing now opens the sub-menu" cue — and
+// dragging back up below the distance un-arms it again (highlight off, no
+// sub-menu on release). Only a release with the row lit pushes the sub-menu,
+// exactly like pressing UP on the top entry. The raw subscription is scoped
+// by window appear/disappear: it is live only while the main window is the
+// top window, so it never reads touches meant for covered windows. Platform
+// scope: emery/gabbro only, like the reader touch layer in HeadeRSS.
+// ---------------------------------------------------------------------------
+
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_GABBRO)
+
+#define PULL_ARM_DIST 45   // px of downward travel that arms the settings pull
+#define PULL_ENGAGE 8      // px before the rubber band engages (tap dead zone)
+#define PULL_BAND_MAX 16   // px the sheet may shift (rubber-band feel)
+#define PULL_BAND_FACTOR 2 // resistance: shift = pull / 2
+// The pull must START physically in the top band of the screen — the 3-dot
+// row plus the first shortcut row (~70 px) — so a scroll gesture that begins
+// mid-list (wherever the finger lands) can never arm the settings pull.
+#define PULL_TOP_ZONE 70
+// The menu CONTENT must be at its very top (offset 0); selection index is
+// not reliable here (see section comment).
+#define PULL_TOP_OFFSET_TOL 4 // px of tolerance around offset 0
+
+static bool s_pull_active;       // raw subscription live (main window is top)
+static bool s_pull_down_at_top;  // menu at the top + finger in the band at touchdown
+static bool s_pull_gest_active;  // a Touchdown was seen for the current touch
+static bool s_pull_armed;        // the pull crossed the arm distance (row lit)
+static GPoint s_pull_down;       // touchdown point
+static Animation *s_pull_anim;   // snap-back animation
+
+//! Is the main menu's content scrolled to its very top?
+static bool menu_at_top(void) {
+  ScrollLayer *sl = menu_layer_get_scroll_layer(s_main_menu);
+  if (!sl) {
+    return false;
+  }
+  return scroll_layer_get_content_offset(sl).y >= -PULL_TOP_OFFSET_TOL;
+}
+
+//! Raw touch stream: watches for the rubber-band pull only. All other
+//! gestures (swipe scroll, tap select) stay with the touch bridge. The
+//! s_pull_gest_active guard drops orphan events (a subscription can start
+//! mid-gesture when the window appears during a pop), so a stray liftoff
+//! with a stale anchor never reads as a pull.
+//! Arming contract: the pull may only arm when it STARTED at the very top
+//! with the finger in the top band (latched at touchdown), the menu is still
+//! at the top, and the drag has travelled past PULL_ARM_DIST. Crossing that
+//! distance lights the 3-dot row; dragging back below it un-arms. Only a
+//! release while armed enters the sub-menu.
+static void main_touch_handler(const TouchEvent *event, void *context) {
+  if (!s_main_menu || !s_touch_enabled) {
+    return;
+  }
+  if (event->type == TouchEvent_Touchdown) {
+    s_pull_down = GPoint(event->x, event->y);
+    // "At the very top" = the menu CONTENT is at offset 0 AND the finger
+    // lands in the top band of the screen. Both are latched for the gesture.
+    s_pull_down_at_top = menu_at_top() && (event->y <= PULL_TOP_ZONE);
+    s_pull_gest_active = true;
+    s_pull_armed = false; // a fresh touch starts unarmed
+    arm_autoclose();      // any touch is an interaction
+    ScrollLayer *sl = menu_layer_get_scroll_layer(s_main_menu);
+    APP_LOG(APP_LOG_LEVEL_INFO, "touch: pull down y=%d off=%ld top=%d",
+            (int)event->y,
+            (long)(sl ? scroll_layer_get_content_offset(sl).y : 0),
+            (int)s_pull_down_at_top);
+    if (s_pull_anim) {
+      Animation *old = s_pull_anim;
+      s_pull_anim = NULL;
+      animation_unschedule(old);
+    }
+    return;
+  }
+  if (!s_pull_gest_active) {
+    return; // orphan MOVE/liftoff: not our touch
+  }
+  Layer *ml = menu_layer_get_layer(s_main_menu);
+  GRect f = layer_get_frame(ml);
+  if (event->type == TouchEvent_PositionUpdate) {
+    int16_t dy = (int16_t)(event->y - s_pull_down.y);
+    bool at_top_now = menu_at_top();
+    // Arm/disarm: only a pull that started at the very top and is still at
+    // the top crosses the arm distance. The lit row is the "releasing now
+    // opens the sub-menu" cue, so it must mirror the trigger exactly.
+    bool armed = s_pull_down_at_top && at_top_now && dy >= PULL_ARM_DIST;
+    if (armed != s_pull_armed) {
+      s_pull_armed = armed;
+      layer_mark_dirty(ml); // the 3-dot row highlight follows the state
+      APP_LOG(APP_LOG_LEVEL_INFO, "touch: pull %s (dy=%d)",
+              armed ? "armed" : "disarmed", (int)dy);
+    }
+    // Rubber band: shift the sheet down (resisted) while pulling down at the
+    // top; dragging back up lets the sheet follow back to rest.
+    int16_t frame_y = 0;
+    if (s_pull_down_at_top && at_top_now && dy >= PULL_ENGAGE) {
+      frame_y = (dy - PULL_ENGAGE) / PULL_BAND_FACTOR;
+      if (frame_y > PULL_BAND_MAX) {
+        frame_y = PULL_BAND_MAX;
+      }
+    }
+    if (f.origin.y != frame_y) {
+      layer_set_frame(ml, GRect(0, frame_y, f.size.w, f.size.h));
+    }
+    return;
+  }
+  // Liftoff: enter the sub-menu only when the armed state was actually shown
+  // (release-while-armed is the contract the highlight promised).
+  s_pull_gest_active = false;
+  bool at_top = menu_at_top();
+  if (s_pull_down_at_top && at_top && s_pull_armed) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "touch: pull down -> sub-menu");
+    s_pull_armed = false;
+    if (f.origin.y != 0) { // put the sheet back before it gets covered
+      layer_set_frame(ml, GRect(0, 0, f.size.w, f.size.h));
+    }
+    push_submenu_window();
+    return;
+  }
+  // No trigger: clear the highlight and snap the sheet back.
+  if (s_pull_armed) {
+    s_pull_armed = false;
+    layer_mark_dirty(ml);
+  }
+  if (f.origin.y != 0) {
+    GRect from = f;
+    GRect to = GRect(0, 0, f.size.w, f.size.h);
+    s_pull_anim = (Animation *)property_animation_create_layer_frame(ml,
+                                                                     &from, &to);
+    animation_set_duration(s_pull_anim, 150);
+    animation_set_curve(s_pull_anim, AnimationCurveEaseOut);
+    animation_schedule(s_pull_anim);
+  }
+}
+
+//! Arm the pull-down gesture while the main window is the top window.
+static void pull_arm(void) {
+  if (!s_pull_active && s_touch_enabled && touch_service_is_enabled()) {
+    touch_service_subscribe(main_touch_handler, NULL);
+    s_pull_active = true;
+    s_pull_gest_active = false; // a fresh subscription sees no in-flight touch
+  }
+}
+
+//! Disarm it when another window covers the main window.
+static void pull_disarm(void) {
+  if (s_pull_active) {
+    touch_service_unsubscribe();
+    s_pull_active = false;
+  }
+  if (s_pull_armed) { // never leave the 3-dot row lit while covered
+    s_pull_armed = false;
+    if (s_main_menu) {
+      layer_mark_dirty(menu_layer_get_layer(s_main_menu));
+    }
+  }
+}
+
+#endif // touch-capable platforms
+
 static void main_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                           void *callback_context) {
   uint16_t row = cell_index->row;
   GRect bounds = layer_get_bounds(cell_layer);
 
   if (row == 0) {
-    // Narrow entry row: three horizontal accent dots, centered.
+    // Narrow entry row: three horizontal accent dots, centered. While the
+    // pull-down gesture is armed the row INVERTS (accent fill, black dots)
+    // — the cue that releasing the pull opens the sub-menu.
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_GABBRO)
+    bool armed = s_pull_armed;
+#else
+    bool armed = false;
+#endif
+    graphics_context_set_fill_color(ctx, armed ? s_accent : theme_bg());
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
     int16_t cx = bounds.size.w / 2;
     int16_t cy = bounds.size.h / 2;
-    graphics_context_set_fill_color(ctx, s_accent);
+    graphics_context_set_fill_color(ctx, armed ? GColorBlack : s_accent);
     for (int i = -1; i <= 1; i++) {
       graphics_fill_circle(ctx, GPoint(cx + i * 6, cy), 2);
     }
@@ -2312,16 +2490,29 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_GABBRO)
+  if (s_pull_anim) {
+    Animation *old = s_pull_anim;
+    s_pull_anim = NULL;
+    animation_unschedule(old); // never animate a destroyed menu
+  }
+#endif
   menu_layer_destroy(s_main_menu);
   s_main_menu = NULL;
 }
 
 static void main_window_appear(Window *window) {
   menu_layer_reload_data(s_main_menu);
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_GABBRO)
+  pull_arm();
+#endif
   arm_autoclose(); // idle timeout starts when the main screen is visible
 }
 
 static void main_window_disappear(Window *window) {
+#if defined(PBL_PLATFORM_EMERY) || defined(PBL_PLATFORM_GABBRO)
+  pull_disarm();
+#endif
   cancel_autoclose(); // any other window (sub-menu, dialog, settings) suspends it
 }
 

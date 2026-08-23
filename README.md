@@ -38,8 +38,11 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
 - **Haptic feedback** — the watch pulses on every shortcut launch and on
   every error/timeout; a "Vibrations" sub-menu setting (ON/OFF) silences
   every haptic in the app
-- **Touch-ready** — native touch navigation, opt-in from the phone settings
-  (off by default until the firmware touch bugs are fixed)
+- **Touch-ready** — on by default (switch off in the phone settings):
+  swipe scrolls, single tap fires a shortcut (CONFIRM shortcuts still need
+  the physical UP + DOWN), and a pull down from the very top — finger in
+  the top band, 3-dot row lights up, release while lit — opens the
+  sub-menu; dragging back up cancels
 - **Auto-close** — set Never/3s/5s/10s/15s/30s on the watch; idle time on the
   main screen returns you to the watchface, quick-launch style
 - **Anything HA can do** — scripts and scenes can orchestrate lights, locks,

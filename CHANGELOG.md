@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1
+
+Touch by default, with the HeadeRSS pull-down pattern and a clean toggle.
+
+- Touch is ON by default; the phone-settings toggle is now a bare switch
+  (no firmware-bug caveat text)
+- Pull down on the main menu to open the sub-menu, exactly like HeadeRSS:
+  the pull only arms when the menu content is at its very top (real scroll
+  offset — the touch bridge scrolls content without moving the selection)
+  and the finger starts in the top band; the 3-dot row inverts to the
+  accent fill as the armed cue; dragging back up cancels; release-while-
+  armed opens the sub-menu
+- Shortcuts trigger on a single tap as before; the UP + DOWN confirmation
+  dialog stays button-only (touch can never confirm an execution)
+- Rubber-band sheet feedback during the pull; snap-back on cancel
+
 ## 0.6.0
 
 Safer confirmations and haptic feedback.
