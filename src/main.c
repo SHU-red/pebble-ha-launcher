@@ -26,7 +26,11 @@
 #define PERSIST_KEY_AUTOCLOSE 8      // int32: seconds after success before auto-close (0 = never)
 #define PERSIST_KEY_SUBTITLE 9       // int32: main-screen info-line field mask (SUBTITLE_*)
 #define PERSIST_KEY_VIBRATE 10       // int32: 1 = haptics on (watch-menu setting)
+#define PERSIST_KEY_LABELFILTER 11   // string: only this HA label ("" = show all)
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
+
+#define MAX_FILTER_LABELS 8          // labels offered by the Filter row (SELECT cycles)
+#define LABEL_NAME_LEN 24            // stored label name, including the NUL
 
 #define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
 
@@ -312,6 +316,11 @@ static bool s_touch_enabled;
 static int32_t s_autoclose_seconds; // 0 = never close automatically
 static uint8_t s_subtitle_fields = SUBTITLE_FULL; // main-screen info line mask
 static bool s_vibrate_enabled = true; // 1 = haptics on (watch-menu setting)
+// Label filter: show only entities carrying this HA label ("" = every label).
+// Chosen from the watch menu; the JS applies it to the browse response.
+static char s_label_filter[LABEL_NAME_LEN];
+static char s_label_names[MAX_FILTER_LABELS][LABEL_NAME_LEN]; // labels of the last fetch
+static uint8_t s_label_name_count;
 
 static AppTimer *s_autoclose_timer;
 
@@ -415,6 +424,14 @@ static void persist_load(void) {
   // Haptics default ON; only an explicit stored OFF disables them.
   s_vibrate_enabled = !persist_exists(PERSIST_KEY_VIBRATE) ||
                       persist_read_int(PERSIST_KEY_VIBRATE) != 0;
+  // Label filter default: no filter (every label listed).
+  s_label_filter[0] = '\0';
+  if (persist_exists(PERSIST_KEY_LABELFILTER)) {
+    persist_read_string(PERSIST_KEY_LABELFILTER, s_label_filter, sizeof(s_label_filter));
+  }
+  // The offered label names come from the last browse, so they are not
+  // persisted: until the next fetch the row cycles All <-> the stored label.
+  s_label_name_count = 0;
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
@@ -986,6 +1003,30 @@ static void edit_begin_collect(int32_t count) {
   s_pending_active = false;
 }
 
+//! Split the '\n'-joined label list of the incoming browse header into
+//! s_label_names, which the Filter row cycles through. The extra entries
+//! beyond MAX_FILTER_LABELS are dropped (a SELECT cycle through more than 8 is
+//! useless anyway) and names that do not fit are skipped rather than clipped:
+//! the JS matches the filter against the full HA label name, so a clipped
+//! name would select nothing and empty the picker with no visible reason.
+static void label_list_update(const char *joined) {
+  s_label_name_count = 0;
+  const char *p = joined;
+  while (*p && s_label_name_count < MAX_FILTER_LABELS) {
+    const char *end = strchr(p, '\n');
+    size_t len = end ? (size_t)(end - p) : strlen(p);
+    if (len > 0 && len < LABEL_NAME_LEN) {
+      memcpy(s_label_names[s_label_name_count], p, len);
+      s_label_names[s_label_name_count][len] = '\0';
+      s_label_name_count++;
+    }
+    if (!end) {
+      break;
+    }
+    p = end + 1;
+  }
+}
+
 static void edit_commit_pending(void) {
   if (s_script_count >= MAX_SHORTCUTS) {
     s_pending_active = false;
@@ -1049,8 +1090,13 @@ static void edit_collect_script(DictionaryIterator *iter) {
 //! labels, icon names, icons. Scripts absent from the fetch are marked
 //! missing. Never adds/removes/reorders. Persists. Returns updated count.
 static uint16_t refresh_shortcut_metadata(void) {
-  for (uint16_t i = 0; i < s_shortcut_count; i++) {
-    s_shortcuts[i].missing = 1;
+  // With a label filter active the fetch only covers the tagged subset, so a
+  // shortcut that is merely untagged must not read as "gone from Home
+  // Assistant": clear the flag for what came back, never raise it.
+  if (!s_label_filter[0]) {
+    for (uint16_t i = 0; i < s_shortcut_count; i++) {
+      s_shortcuts[i].missing = 1;
+    }
   }
   uint16_t updated = 0;
   for (uint16_t j = 0; j < s_script_count; j++) {
@@ -1120,12 +1166,20 @@ static void edit_render(void) {
 //! The picker fetch completed: refresh the stored shortcut metadata (same as
 //! "Update metadata") and append shortcuts that no longer exist in HA, marked
 //! missing, so the user can still see them and turn them off like any other.
+//! With a label filter active the missing re-append is skipped: the picker is
+//! meant to show the tagged subset, and every untagged shortcut would come
+//! right back as a red row. Clear the filter to manage those.
 static void edit_fetch_done(void) {
   if (!s_edit_window) {
     return;
   }
   edit_hide_status();
   refresh_shortcut_metadata();
+
+  if (s_label_filter[0]) {
+    menu_layer_reload_data(s_edit_menu);
+    return;
+  }
 
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
     if (!s_shortcuts[i].missing) {
@@ -1589,6 +1643,7 @@ static void edit_window_appear(Window *window) {
   AppMessageResult res = app_message_outbox_begin(&iter);
   if (res == APP_MSG_OK) {
     dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
+    dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
     res = app_message_outbox_send();
   }
   if (res != APP_MSG_OK) {
@@ -1626,6 +1681,7 @@ static void push_update_window(void) {
   DictionaryIterator *iter;
   if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
     dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
+    dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
     dict_write_end(iter);
     app_message_outbox_send();
   }
@@ -1646,7 +1702,7 @@ static int32_t s_reorder_held = -1;
 
 static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
                                  void *callback_context) {
-  return 6;
+  return 7;
 }
 
 static const char *autoclose_label(int32_t seconds);
@@ -1654,6 +1710,7 @@ static void autoclose_cycle(void);
 static const char *subtitle_label(uint8_t fields);
 static void subtitle_cycle(void);
 static void vibration_cycle(void);
+static void label_filter_cycle(void);
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                          void *callback_context) {
@@ -1674,10 +1731,15 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     // The preset names ('none - only name', ...) are longer than the
     // autoclose labels, so no ' - SELECT cycles' hint here.
     menu_cell_basic_draw(ctx, cell_layer, "Info line", subtitle_label(s_subtitle_fields), NULL);
-  } else {
+  } else if (cell_index->row == 5) {
     char sub[48];
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", s_vibrate_enabled ? "ON" : "OFF");
     menu_cell_basic_draw(ctx, cell_layer, "Vibrations", sub, NULL);
+  } else {
+    char sub[48];
+    snprintf(sub, sizeof(sub), "%s - SELECT cycles",
+             s_label_filter[0] ? s_label_filter : "All");
+    menu_cell_basic_draw(ctx, cell_layer, "Label filter", sub, NULL);
   }
 }
 
@@ -1692,8 +1754,10 @@ static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *ca
     autoclose_cycle();
   } else if (cell_index->row == 4) {
     subtitle_cycle();
-  } else {
+  } else if (cell_index->row == 5) {
     vibration_cycle();
+  } else {
+    label_filter_cycle();
   }
 }
 
@@ -1808,6 +1872,43 @@ static void vibration_cycle(void) {
   if (s_vibrate_enabled) {
     vibe_pulse(); // feedback only while haptics are on
   }
+  menu_layer_reload_data(s_sub_menu);
+}
+
+// ---------------------------------------------------------------------------
+// Label filter: show only scripts/scenes carrying one Home Assistant label.
+// SELECT cycles All -> every label the last browse reported (the list is a
+// snapshot, refreshed by the picker or "Update metadata"; a stored label that
+// has since disappeared from HA stays in the cycle so it can still be cleared,
+// and after a restart the row cycles All <-> the stored label until the next
+// fetch). Persisted on the watch; the JS filters the browse response, so the
+// picker only ever sees the tagged subset.
+// ---------------------------------------------------------------------------
+
+static void label_filter_cycle(void) {
+  uint8_t idx = 0; // 0 = All
+  for (uint8_t i = 0; i < s_label_name_count; i++) {
+    if (strcmp(s_label_names[i], s_label_filter) == 0) {
+      idx = (uint8_t)(i + 1);
+      break;
+    }
+  }
+  uint8_t next;
+  // Stored label that HA no longer offers (renamed or deleted): sit on it for
+  // one more press, then cycle on to All, so it stays visible and clearable
+  // instead of silently jumping to whichever label happens to be first.
+  if (s_label_filter[0] && idx == 0) {
+    idx = s_label_name_count;
+  }
+  next = (uint8_t)((idx + 1) % (s_label_name_count + 1));
+  if (next == 0) {
+    s_label_filter[0] = '\0';
+    persist_delete(PERSIST_KEY_LABELFILTER);
+  } else {
+    snprintf(s_label_filter, sizeof(s_label_filter), "%s", s_label_names[next - 1]);
+    persist_write_string(PERSIST_KEY_LABELFILTER, s_label_filter);
+  }
+  vibe_pulse();
   menu_layer_reload_data(s_sub_menu);
 }
 
@@ -2533,6 +2634,7 @@ static void push_main_window(void) {
 
 static void inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *t;
+  Tuple *t2;
   if ((t = dict_find(iter, MESSAGE_KEY_ResultCode))) {
     int32_t code = t->value->int32;
     Tuple *text_t = dict_find(iter, MESSAGE_KEY_ResultText);
@@ -2564,6 +2666,9 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     return;
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ShortcutCount))) {
+    if ((t2 = dict_find(iter, MESSAGE_KEY_LabelList))) {
+      label_list_update(t2->value->cstring);
+    }
     edit_begin_collect(t->value->int32);
     if (s_edit_visible && s_script_expected == 0) {
       edit_fetch_done();

@@ -48,7 +48,9 @@
       "RequestConfig",
       "DarkMode",
       "TouchEnabled",
-      "AutoClose"
+      "AutoClose",
+      "LabelFilter",
+      "LabelList"
     ],
     "resources": {
       "media": [

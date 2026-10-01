@@ -19,6 +19,9 @@ var messageKeys = require('message_keys');
 var CONFIG_KEY = 'haConfig';
 var CLAY_SETTINGS_KEY = 'clay-settings';
 var MAX_SHORTCUTS = 32;
+// Labels offered in the watch's Filter row; must match MAX_FILTER_LABELS in
+// src/main.c (the watch caps the same way when it builds the cycle list).
+var MAX_FILTER_LABELS = 8;
 var EXECUTE_TIMEOUT_MS = 10000;
 var BROWSE_TIMEOUT_MS = 20000;
 
@@ -435,8 +438,9 @@ function executeScript(scriptKey, type) {
 
 /**
  * Browse scripts: POST {baseUrl}/api/template with the script-listing template.
+ * @param {string} labelFilter - HA label to show only; '' = show every label
  */
-function fetchScripts() {
+function fetchScripts(labelFilter) {
   var config = loadConfig();
   if (!config.baseUrl || !config.token) {
     console.log('fetchScripts: no config, aborting');
@@ -460,7 +464,7 @@ function fetchScripts() {
       return; // stale: a newer browse superseded this one
     }
     if (xhr.status === 200) {
-      handleBrowseResponse(xhr.responseText, generation);
+      handleBrowseResponse(xhr.responseText, generation, labelFilter);
     } else {
       sendResult(0, 'Fetch error');
     }
@@ -481,11 +485,18 @@ function fetchScripts() {
 /**
  * Parse the browse response ('entity_id|name|area|labels|icon' per line, one
  * line per script AND scene entity; the entity_id domain selects the type)
- * and stream the results to the watch: ShortcutCount first, then one message
- * per entry. Malformed lines are skipped; the list is capped at MAX_SHORTCUTS.
+ * and stream the results to the watch: one {ShortcutCount, LabelList} message
+ * first, then one message per entry. Malformed lines are skipped; the sent
+ * list is capped at MAX_SHORTCUTS.
+ *
+ * The whole response is parsed first, so the label list the watch offers in
+ * its Filter row stays complete no matter which label is currently selected —
+ * otherwise picking 'pebble' would collapse the choices down to 'pebble'.
  * @param {string} responseText
+ * @param {number} generation - fetch generation; a stale chain aborts
+ * @param {string} labelFilter - show only this label ('' = show all)
  */
-function handleBrowseResponse(responseText, generation) {
+function handleBrowseResponse(responseText, generation, labelFilter) {
   var scripts = [];
   var lines = responseText.split('\n');
 
@@ -527,22 +538,64 @@ function handleBrowseResponse(responseText, generation) {
       icon: mdiToIndex(rawIcon),
       iconName: rawIcon ? rawIcon.replace(/^mdi:/, '') : (type === 'scene' ? 'palette' : 'script-text')
     });
-    if (scripts.length >= MAX_SHORTCUTS) {
-      break;
+  }
+
+  // Distinct labels over the whole list, in encounter order: the watch's
+  // Filter row cycles through these. Case-insensitive, so 'Pebble' and
+  // 'pebble' (which select the same entities) are offered once.
+  var labelList = [];
+  var labelKeys = [];
+  for (var a = 0; a < scripts.length; a++) {
+    var names = (scripts[a].labels || '').split(',');
+    for (var b = 0; b < names.length; b++) {
+      var label = names[b].trim();
+      var key = label.toLowerCase();
+      if (!label || labelKeys.indexOf(key) >= 0) {
+        continue;
+      }
+      if (labelList.length >= MAX_FILTER_LABELS) {
+        break;
+      }
+      labelList.push(label);
+      labelKeys.push(key);
     }
   }
 
-  sendBrowseResults(scripts, generation);
+  // ponytail: labels are matched as comma-joined display names, so a HA label
+  // literally named "a,b" can be neither listed nor selected exactly.
+  var want = (labelFilter || '').trim().toLowerCase();
+  var visible = scripts;
+  if (want) {
+    visible = [];
+    for (var c = 0; c < scripts.length; c++) {
+      var have = (scripts[c].labels || '').toLowerCase().split(',');
+      for (var d = 0; d < have.length; d++) {
+        if (have[d].trim() === want) {
+          visible.push(scripts[c]);
+          break;
+        }
+      }
+    }
+  }
+  // The cap applies after filtering, so untagged entities can't crowd tagged
+  // ones out of the 32 slots.
+  if (visible.length > MAX_SHORTCUTS) {
+    visible = visible.slice(0, MAX_SHORTCUTS);
+  }
+
+  sendBrowseResults(visible, labelList, generation);
 }
 
 /**
- * Send the browse results: {ShortcutCount: n} first, then one
- * {ScriptName, ScriptKey, ScriptArea, ScriptLabels, ScriptIcon} message per
- * entry, chained through the ack callback to respect the app message queue.
+ * Send the browse results: {ShortcutCount: n, LabelList: <'\n'-joined>} first,
+ * then one {ScriptName, ScriptKey, ScriptArea, ScriptLabels, ScriptIcon}
+ * message per entry, chained through the ack callback to respect the app
+ * message queue.
  * @param {Array<Object>} scripts
+ * @param {Array<string>} labelList
  * @param {number} generation - fetch generation; a stale chain aborts
  */
-function sendBrowseResults(scripts, generation) {
+function sendBrowseResults(scripts, labelList, generation) {
   if (generation !== fetchGeneration) {
     console.log('browse: stale chain dropped');
     return;
@@ -550,6 +603,7 @@ function sendBrowseResults(scripts, generation) {
   console.log('browse: sending ' + scripts.length + ' script(s)');
   var dict = {};
   dict.ShortcutCount = scripts.length;
+  dict.LabelList = labelList.join('\n');
   Pebble.sendAppMessage(dict, function() {
     sendScriptEntry(scripts, 0, generation);
   }, function(err) {
@@ -683,8 +737,10 @@ Pebble.addEventListener('appmessage', function(e) {
 
   var fetchFlag = payloadValue(payload, 'FetchScripts');
   if (fetchFlag !== undefined) {
+    // The watch owns the Filter setting; it rides along with the request.
+    var labelFilter = payloadValue(payload, 'LabelFilter');
     console.log('appmessage: fetching scripts');
-    fetchScripts();
+    fetchScripts(labelFilter === undefined || labelFilter === null ? '' : String(labelFilter));
     return;
   }
 

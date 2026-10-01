@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+Label filter: show only the shortcuts you tagged for the watch.
+
+- New "Label filter" sub-menu row (SELECT cycles All → every Home Assistant
+  label the last fetch saw); the picker then lists only scripts/scenes
+  carrying the chosen label, and blank keeps the list-everything behavior
+- The offered labels are the ones in use by scripts/scenes — the label
+  registry itself is websocket-only — so the row fills up after a fetch
+  (picker or "Update metadata") and cycles All ↔ the stored label until then
+- The 32-shortcut cap now applies after filtering, so untagged entities can
+  no longer crowd tagged ones out of the list
+- Labels longer than 23 characters are not offered in the cycle: the row
+  would have to clip the name, and a clipped name matches nothing, so the
+  picker would empty with no visible reason
+- A stored label that HA later renames or deletes stays on the row for one
+  press and then cycles to All, instead of jumping to an arbitrary label
+- While a filter is active, kept-but-untagged shortcuts are neither re-added
+  to the picker as red rows nor marked missing (main screen included); clear
+  the filter to manage them
+
 ## 0.6.1
 
 Touch by default, with the HeadeRSS pull-down pattern and a clean toggle.

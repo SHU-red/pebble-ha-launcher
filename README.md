@@ -24,6 +24,13 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   request to HA, no browsing, no config round-trips
 - **Easy setup** — the picker fetches every available HA script and scene
   (name, area, tags, icon) automatically; pick the ones you use
+- **Label filter** — one sub-menu row (`Label filter`, SELECT cycles
+  All → every label the last fetch saw) narrows the picker to scripts and
+  scenes carrying that HA label, so a busy Home Assistant stays navigable on
+  the watch. Blank keeps today's list-everything. Labels come from the last
+  browse, and while a filter is active your kept-but-untagged shortcuts are
+  hidden in the picker and never marked missing — clear the filter to manage
+  them
 - **Type at a glance** — the main list leads each shortcut's detail line with
   a symbol: `$` for scripts, a play triangle for scenes, then
   `·`-joined area, tags and icon name. The "Info line" sub-menu setting
@@ -67,8 +74,10 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    Press Select to cycle the state, then run the picked shortcuts from the
    The 3-dot entry row also holds Change Order, Update metadata,
    Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s), Info line
-   (SELECT cycles the main-screen detail fields) and Vibrations (SELECT
-   toggles every haptic on/off). Missing entities stay
+   (SELECT cycles the main-screen detail fields), Vibrations (SELECT
+   toggles every haptic on/off) and Label filter (SELECT cycles All →
+   the labels seen in the last fetch; the picker then lists only the
+   tagged entities). Missing entities stay
    listed in the picker with a red `!` so you can turn them off.
 
 ## Build
