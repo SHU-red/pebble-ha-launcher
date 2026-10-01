@@ -6,7 +6,7 @@ Label filter: show only the shortcuts you tagged for the watch.
 
 - New "Label filter" sub-menu row (SELECT cycles All → every Home Assistant
   label the last fetch saw); the picker then lists only scripts/scenes
-  carrying the chosen label, and blank keeps the list-everything behavior
+  carrying the chosen label, and blank lists everything, as before
 - The offered labels are the ones in use by scripts/scenes — the label
   registry itself is websocket-only — so the row fills up after a fetch
   (picker or "Update metadata") and cycles All ↔ the stored label until then
