@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 Label filter: show only the shortcuts you tagged for the watch.
 
