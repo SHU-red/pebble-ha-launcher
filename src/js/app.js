@@ -605,9 +605,9 @@ function handleBrowseResponse(responseText, generation, labelFilter) {
  * Filter row is filled without the user running a metadata refresh first, and
  * without dumping up to 32 entities over AppMessage to get there.
  *
- * A failure sends an empty list rather than nothing: the watch clears its
- * "fetching" state on any reply, so a silent error would leave the row
- * claiming to fetch forever.
+ * Failures are logged and nothing is sent: the watch keeps whatever list it
+ * already cached, so being away from home (or HA being down) cannot wipe the
+ * labels the user can still filter by.
  */
 function fetchLabels() {
   var config = loadConfig();
@@ -625,17 +625,14 @@ function fetchLabels() {
     if (xhr.status === 200) {
       sendLabels(parseBrowse(xhr.responseText).labelList);
     } else {
-      console.log('fetchLabels: HTTP ' + xhr.status);
-      sendLabels([]);
+      console.log('fetchLabels: HTTP ' + xhr.status + ', keeping cached labels');
     }
   };
   xhr.onerror = function() {
-    console.log('fetchLabels: request failed');
-    sendLabels([]);
+    console.log('fetchLabels: request failed, keeping cached labels');
   };
   xhr.ontimeout = function() {
-    console.log('fetchLabels: timed out');
-    sendLabels([]);
+    console.log('fetchLabels: timed out, keeping cached labels');
   };
   xhr.send(JSON.stringify({ template: BROWSE_TEMPLATE }));
 }
@@ -676,7 +673,17 @@ function sendBrowseResults(scripts, labelList, generation) {
     sendScriptEntry(scripts, 0, generation);
   }, function(err) {
     console.log('browse: failed to send ShortcutCount: ' + JSON.stringify(err));
+    sendFetchFailure();
   });
+}
+
+/**
+ * Tell the watch a browse gave up. Every hop is acknowledged, so a failure
+ * here means the chain stopped and no further entries are coming — without
+ * this the picker would keep its "Fetching..." status over a partial list.
+ */
+function sendFetchFailure() {
+  sendResult(0, 'Fetch error');
 }
 
 /**
@@ -702,6 +709,7 @@ function sendScriptEntry(scripts, index, generation) {
     sendScriptEntry(scripts, index + 1, generation);
   }, function(err) {
     console.log('browse: failed to send entry ' + script.key + ': ' + JSON.stringify(err));
+    sendFetchFailure();
   });
 }
 

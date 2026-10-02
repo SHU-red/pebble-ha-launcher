@@ -32,6 +32,9 @@
 
 #define MAX_FILTER_LABELS 8          // labels offered by the Filter row (SELECT cycles)
 #define LABEL_NAME_LEN 24            // stored label name, including the NUL
+// Picker/metadata fetch watchdog. Sits above the JS browse timeout (20s), so
+// it only fires when the phone stopped answering altogether.
+#define FETCH_TIMEOUT_MS 25000
 
 #define DEFAULT_ACCENT_HEX 0x0055AA  // GColorCobaltBlue (24-bit RGB)
 
@@ -1003,6 +1006,7 @@ static bool s_edit_visible;
 static void edit_render(void);
 static void edit_fetch_done(void);
 static void metadata_apply(void);
+static void fetch_timer_cancel(void);
 static bool s_edit_update_mode;
 
 static void edit_begin_collect(int32_t count) {
@@ -1143,6 +1147,7 @@ static uint16_t refresh_shortcut_metadata(void) {
 
 //! Update-only pass (sub-menu "Update metadata"): refresh + result dialog.
 static void metadata_apply(void) {
+  fetch_timer_cancel();
   uint16_t updated = refresh_shortcut_metadata();
   uint16_t missing = 0;
   for (uint16_t i = 0; i < s_shortcut_count; i++) {
@@ -1180,6 +1185,41 @@ static void edit_show_status_error(const char *text) {
   edit_show_status(text, GColorRed);
 }
 
+// ---------------------------------------------------------------------------
+// Browse watchdog. The phone reports every failed hop (HTTP error, timeout,
+// send failure), but if its JS dies mid-chain nothing ever comes back and the
+// picker would sit on "Fetching..." for good. The timer is armed when the
+// request goes out and cancelled by every completion path, so it only fires
+// when the reply really stopped; it then checks the entry counters, which is
+// the same condition the chain itself waits on.
+// ---------------------------------------------------------------------------
+
+static AppTimer *s_fetch_timer;
+
+static void fetch_timer_cancel(void) {
+  if (s_fetch_timer) {
+    app_timer_cancel(s_fetch_timer);
+    s_fetch_timer = NULL;
+  }
+}
+
+static void fetch_timeout_cb(void *context) {
+  s_fetch_timer = NULL;
+  if (s_script_count >= s_script_expected) {
+    return; // the chain finished after all
+  }
+  if (s_edit_update_mode) {
+    dialog_show_final(false, "Fetch error");
+  } else if (s_edit_visible) {
+    edit_show_status_error("Fetch error");
+  }
+}
+
+static void fetch_timer_arm(void) {
+  fetch_timer_cancel();
+  s_fetch_timer = app_timer_register(FETCH_TIMEOUT_MS, fetch_timeout_cb, NULL);
+}
+
 static void edit_render(void) {
   if (!s_edit_window) {
     return;
@@ -1197,6 +1237,7 @@ static void edit_fetch_done(void) {
   if (!s_edit_window) {
     return;
   }
+  fetch_timer_cancel();
   edit_hide_status();
   refresh_shortcut_metadata();
 
@@ -1643,6 +1684,7 @@ static void edit_window_load(Window *window) {
 }
 
 static void edit_window_unload(Window *window) {
+  fetch_timer_cancel();
   if (s_bar_anim) {
     Animation *a = s_bar_anim;
     s_bar_anim = NULL; // stopped handler sees the mismatch and bails
@@ -1673,6 +1715,8 @@ static void edit_window_appear(Window *window) {
   if (res != APP_MSG_OK) {
     APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send FetchScripts (%d)", (int)res);
     edit_show_status_error("Send failed");
+  } else {
+    fetch_timer_arm();
   }
 }
 
@@ -1707,7 +1751,9 @@ static void push_update_window(void) {
     dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
     dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
     dict_write_end(iter);
-    app_message_outbox_send();
+    if (app_message_outbox_send() == APP_MSG_OK) {
+      fetch_timer_arm();
+    }
   }
 }
 
@@ -2801,6 +2847,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *t;
   Tuple *t2;
   if ((t = dict_find(iter, MESSAGE_KEY_ResultCode))) {
+    fetch_timer_cancel(); // the reply arrived, whatever it says
     int32_t code = t->value->int32;
     Tuple *text_t = dict_find(iter, MESSAGE_KEY_ResultText);
     const char *text = text_t ? text_t->value->cstring : "";

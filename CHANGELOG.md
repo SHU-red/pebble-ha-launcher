@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.1
+
+Hardening the two-page menu: no loading state, and no way for a fetch to
+hang.
+
+- Removed the "Fetching labels..." row hint and the state behind it. Nothing
+  waits on the label list, and a flag that only cleared when a reply arrived
+  meant an offline phone could leave the row claiming to fetch forever
+- Fixed the first-install label warm-up: the watch now hands the stored
+  config to the phone after a save (the JS only learned it on `ready`), so
+  the labels request no longer fires against empty credentials. The refresh
+  moved to the phone side — one message each way, instead of two back-to-back
+  sends where the second could return `APP_MSG_BUSY` and be dropped
+- Picker and "Update metadata" now have a fetch watchdog (25s, above the
+  phone's own 20s request timeout). Every failed hop was already reported,
+  but if the phone's JS stopped mid-chain nothing came back and the picker
+  sat on "Fetching..." over a partial list; it now ends in "Fetch error"
+- The phone also reports a browse that stops mid-chain, instead of logging it
+  only
+- A failed label fetch no longer replies with an empty list: the watch keeps
+  its cached labels, so being away from home (or HA being down) cannot wipe
+  the filter choices
+
 ## 0.8.0
 
 The menu is two pages now, and the label filter loads itself.
@@ -11,14 +34,13 @@ The menu is two pages now, and the label filter loads itself.
 - The label list is fetched when the Shortcuts page opens (labels only: one
   request, no entity dump) instead of waiting for a manual picker or
   "Update metadata" run, and it is cached in flash — so the row cycles your
-  labels on the first open and right after a restart. The phone also
-  refreshes the list whenever it learns its HA address and token, so a
-  first-time save fills the row too
-- Picker row renamed to "Pick shortcuts": the page and its first row were
-  both called "Shortcuts"
-- No loading state on the shortcut path: the label list fills in behind the
-  UI, opening the app fetches nothing at all (the main list is on the watch),
-  and a failed label fetch simply leaves the row showing what it knows
+  labels on the first open, right after a restart, and once settings are
+  saved
+- Picker row renamed to "Pick shortcuts" so the page and its first row are
+  not both called "Shortcuts"; the row reads "Fetching labels..." while the
+  list is on its way
+- A failed label fetch replies with an empty list rather than nothing, so the
+  row falls back to All instead of claiming to fetch forever
 - Nothing to migrate: the stored label filter keeps working
 
 ## 0.7.0
