@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.2
+
+- Opening the Shortcuts page and then tapping "Pick shortcuts" (or
+  "Update metadata") straight away could collide: the second AppMessage send
+  returned `APP_MSG_BUSY` and the screen showed "Send failed" with an empty
+  picker, with no way forward but BACK. A busy outbox is now retried once
+  after 300ms; only a second busy or a real send error is reported
+- The fetch watchdog now fires on any request that never finished. Its
+  previous check ("entries received >= expected") was also true before the
+  first reply, so it bailed out in the worst stall — the phone dying before
+  it ever sent the count
+- "Update metadata" against a Home Assistant with no scripts or scenes now
+  finishes and reports; the dialog used to sit on "Updating..." forever,
+  waiting for entries that were never coming
+- A pending send retry is cancelled when the picker closes
+
 ## 0.8.1
 
 Hardening the two-page menu: no loading state, and no way for a fetch to

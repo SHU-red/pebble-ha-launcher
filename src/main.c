@@ -1205,9 +1205,10 @@ static void fetch_timer_cancel(void) {
 
 static void fetch_timeout_cb(void *context) {
   s_fetch_timer = NULL;
-  if (s_script_count >= s_script_expected) {
-    return; // the chain finished after all
-  }
+  // The timer is armed only when the request goes out and cancelled by every
+  // completion path, so a firing timer means one thing: the fetch never
+  // finished. (Checking the entry counters instead would bail out exactly when
+  // the phone died before sending the count, which is the worst stall.)
   if (s_edit_update_mode) {
     dialog_show_final(false, "Fetch error");
   } else if (s_edit_visible) {
@@ -1218,6 +1219,81 @@ static void fetch_timeout_cb(void *context) {
 static void fetch_timer_arm(void) {
   fetch_timer_cancel();
   s_fetch_timer = app_timer_register(FETCH_TIMEOUT_MS, fetch_timeout_cb, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Outbox retry. Opening the Shortcuts page asks the phone for the label list,
+// and tapping "Pick shortcuts" or "Update metadata" right after asks for the
+// entity list; two outbox_begin calls that close together make the second
+// return APP_MSG_BUSY. That is a timing artifact, not an error, so it is
+// retried once instead of failing the screen the user just opened. One retry
+// only: a busy outbox inside the retry is a real failure.
+// ---------------------------------------------------------------------------
+
+#define SEND_RETRY_MS 300
+#define SEND_RETRY_SCRIPTS 1
+#define SEND_RETRY_LABELS 2
+
+static AppTimer *s_send_retry_timer;
+static uint8_t s_send_retry_kind;
+static bool s_send_retry_active; // true while the retry callback is running
+
+static void sub_request_labels(void);
+static void send_retry_cb(void *context);
+
+static void send_retry_schedule(uint8_t kind) {
+  s_send_retry_kind = kind;
+  if (s_send_retry_timer) {
+    app_timer_cancel(s_send_retry_timer);
+  }
+  s_send_retry_timer = app_timer_register(SEND_RETRY_MS, send_retry_cb, NULL);
+}
+
+static void send_retry_cancel(void) {
+  if (s_send_retry_timer) {
+    app_timer_cancel(s_send_retry_timer);
+    s_send_retry_timer = NULL;
+  }
+}
+
+//! Ask the phone for the entity list. Returns false only when the request
+//! could not be sent at all; a busy outbox is queued for one retry and counts
+//! as sent, since there is nothing to show the user yet.
+static bool edit_request_scripts(void) {
+  DictionaryIterator *iter;
+  AppMessageResult res = app_message_outbox_begin(&iter);
+  if (res == APP_MSG_OK) {
+    dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
+    dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
+    dict_write_end(iter);
+    res = app_message_outbox_send();
+  }
+  if (res == APP_MSG_BUSY) {
+    if (!s_send_retry_active) {
+      send_retry_schedule(SEND_RETRY_SCRIPTS);
+    }
+    return true;
+  }
+  if (res != APP_MSG_OK) {
+    return false;
+  }
+  fetch_timer_arm();
+  return true;
+}
+
+static void send_retry_cb(void *context) {
+  s_send_retry_timer = NULL;
+  s_send_retry_active = true;
+  if (s_send_retry_kind == SEND_RETRY_LABELS) {
+    sub_request_labels();
+  } else if (!edit_request_scripts()) {
+    if (s_edit_update_mode) {
+      dialog_show_final(false, "Send failed");
+    } else if (s_edit_visible) {
+      edit_show_status_error("Send failed");
+    }
+  }
+  s_send_retry_active = false;
 }
 
 static void edit_render(void) {
@@ -1685,6 +1761,7 @@ static void edit_window_load(Window *window) {
 
 static void edit_window_unload(Window *window) {
   fetch_timer_cancel();
+  send_retry_cancel();
   if (s_bar_anim) {
     Animation *a = s_bar_anim;
     s_bar_anim = NULL; // stopped handler sees the mismatch and bails
@@ -1705,18 +1782,9 @@ static void edit_window_appear(Window *window) {
   edit_show_status(s_edit_update_mode ? "Updating..." : "Fetching...",
                    theme_fg());
 
-  DictionaryIterator *iter;
-  AppMessageResult res = app_message_outbox_begin(&iter);
-  if (res == APP_MSG_OK) {
-    dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
-    dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
-    res = app_message_outbox_send();
-  }
-  if (res != APP_MSG_OK) {
-    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send FetchScripts (%d)", (int)res);
+  if (!edit_request_scripts()) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "Failed to send FetchScripts");
     edit_show_status_error("Send failed");
-  } else {
-    fetch_timer_arm();
   }
 }
 
@@ -1746,14 +1814,8 @@ static void push_update_window(void) {
   s_edit_visible = false;
   edit_begin_collect(0);
   dialog_show_working("Updating...");
-  DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) == APP_MSG_OK) {
-    dict_write_int32(iter, MESSAGE_KEY_FetchScripts, 1);
-    dict_write_cstring(iter, MESSAGE_KEY_LabelFilter, s_label_filter);
-    dict_write_end(iter);
-    if (app_message_outbox_send() == APP_MSG_OK) {
-      fetch_timer_arm();
-    }
+  if (!edit_request_scripts()) {
+    dialog_show_final(false, "Send failed");
   }
 }
 
@@ -1770,12 +1832,15 @@ static void sub_request_labels(void) {
     return; // unconfigured: nothing to ask for
   }
   DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
-    return;
+  AppMessageResult res = app_message_outbox_begin(&iter);
+  if (res == APP_MSG_OK) {
+    dict_write_int32(iter, MESSAGE_KEY_FetchLabels, 1);
+    dict_write_end(iter);
+    res = app_message_outbox_send();
   }
-  dict_write_int32(iter, MESSAGE_KEY_FetchLabels, 1);
-  dict_write_end(iter);
-  app_message_outbox_send();
+  if (res == APP_MSG_BUSY && !s_send_retry_active) {
+    send_retry_schedule(SEND_RETRY_LABELS);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2882,8 +2947,14 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       label_list_store(t2->value->cstring);
     }
     edit_begin_collect(t->value->int32);
-    if (s_edit_visible && s_script_expected == 0) {
-      edit_fetch_done();
+    // Empty result: finish here, or the screen waits for entries that are
+    // never coming — the update dialog would sit on "Updating..." for good.
+    if (s_script_expected == 0) {
+      if (s_edit_update_mode) {
+        metadata_apply();
+      } else if (s_edit_visible) {
+        edit_fetch_done();
+      }
     }
     return;
   }
