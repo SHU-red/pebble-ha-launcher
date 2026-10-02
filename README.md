@@ -96,6 +96,15 @@ Requires the Pebble SDK (v4.17+ for touch support):
 pebble build
 ```
 
+**After bumping `version` in package.json, run `pebble clean` first.** A plain
+rebuild reuses the cached `appinfo`, so the `.pbw` keeps the previous version
+label — and the store then shows the old version even though the code is new:
+
+```bash
+pebble clean && pebble build
+python3 -c "import zipfile,json;print(json.loads(zipfile.ZipFile('build/pebble-ha-launcher.pbw').read('appinfo.json'))['versionLabel'])"
+```
+
 ## Credits
 
 - Inspired by [home-assistant-shortcuts](https://github.com/Carles-Figuerola/home-assistant-shortcuts)
