@@ -28,8 +28,9 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
   All → every label your scripts and scenes carry) narrows the picker to the
   entities tagged for the watch, so a busy Home Assistant stays navigable.
   Blank lists everything, as before. The labels load themselves when the
-  Shortcuts page opens (one small request, cached on the watch — nothing to
-  refresh first), and while a filter is active your kept-but-untagged
+  Shortcuts page opens — never at launch, where nothing is fetched at all, so
+  the main list stays instant — and they are cached on the watch, so there is
+  nothing to refresh first. While a filter is active your kept-but-untagged
   shortcuts are hidden in the picker and never marked missing — clear the
   filter to manage them
 - **Type at a glance** — the main list leads each shortcut's detail line with

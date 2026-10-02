@@ -323,7 +323,6 @@ static char s_label_filter[LABEL_NAME_LEN];
 static char s_label_names[MAX_FILTER_LABELS][LABEL_NAME_LEN]; // labels of the last fetch
 static uint8_t s_label_name_count;
 static char s_label_list_raw[200]; // last '\n'-joined list, as received (persisted)
-static bool s_labels_fetching;     // true while a labels-only fetch is in flight
 
 static void label_list_update(const char *joined);
 
@@ -1038,8 +1037,8 @@ static void label_list_update(const char *joined) {
 }
 
 //! Accept a label list from either fetch path (the browse header or a
-//! labels-only reply): cache it in flash, rebuild the cycle list, and clear
-//! the "fetching" state so the row stops saying so.
+//! labels-only reply): cache it in flash and rebuild the cycle list. Nothing
+//! is waiting on this, so there is no loading state to clear.
 static void label_list_store(const char *joined) {
   char incoming[sizeof(s_label_list_raw)];
   snprintf(incoming, sizeof(incoming), "%s", joined);
@@ -1050,7 +1049,6 @@ static void label_list_store(const char *joined) {
     label_list_update(s_label_list_raw);
     persist_write_string(PERSIST_KEY_LABELLIST, s_label_list_raw);
   }
-  s_labels_fetching = false;
 }
 
 static void edit_commit_pending(void) {
@@ -1719,7 +1717,8 @@ static void push_reorder_window(void);
 //! Ask the phone for the label list and nothing else: same browse template,
 //! but the reply carries only LabelList. Cheap enough to send whenever a
 //! shortcut-side screen opens, so the Filter row is never cold and the user
-//! never has to run a metadata refresh to make it usable.
+//! never has to run a metadata refresh to make it usable. Fire and forget —
+//! nothing waits on it and no screen state depends on the reply.
 static void sub_request_labels(void) {
   if (!s_base_url[0] || !s_token[0]) {
     return; // unconfigured: nothing to ask for
@@ -1730,9 +1729,7 @@ static void sub_request_labels(void) {
   }
   dict_write_int32(iter, MESSAGE_KEY_FetchLabels, 1);
   dict_write_end(iter);
-  if (app_message_outbox_send() == APP_MSG_OK) {
-    s_labels_fetching = true;
-  }
+  app_message_outbox_send();
 }
 
 // ---------------------------------------------------------------------------
@@ -1761,7 +1758,6 @@ static SubPage s_pages[SUB_PAGE_COUNT];
 static Window *s_reorder_window;
 static MenuLayer *s_reorder_menu;
 static int32_t s_reorder_held = -1;
-static bool s_labels_fetching; // a labels-only fetch is in flight
 
 static const char *autoclose_label(int32_t seconds);
 static void autoclose_cycle(void);
@@ -1821,8 +1817,6 @@ static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell
     } else if (row == 2) {
       menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
                            "Refresh names, icons and labels from Home Assistant", NULL);
-    } else if (s_labels_fetching && s_label_name_count == 0) {
-      menu_cell_basic_draw(ctx, cell_layer, "Label filter", "Fetching labels...", NULL);
     } else {
       snprintf(sub, sizeof(sub), "%s - SELECT cycles",
                s_label_filter[0] ? s_label_filter : "All");
@@ -2783,6 +2777,26 @@ static void push_main_window(void) {
 // AppMessage
 // ---------------------------------------------------------------------------
 
+//! Hand the durable config to the phone JS. It is what teaches the JS its
+//! base URL and token right after a save (its own config cache is only
+//! written on 'ready' or by this reply), so it must precede any request that
+//! needs credentials.
+static void send_config_to_phone(void) {
+  DictionaryIterator *out;
+  if (app_message_outbox_begin(&out) != APP_MSG_OK) {
+    return;
+  }
+  dict_write_cstring(out, MESSAGE_KEY_BaseUrl, s_base_url);
+  dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
+  dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
+  dict_write_int32(out, MESSAGE_KEY_AccentColor, (int32_t)s_accent_hex);
+  dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
+  dict_write_int32(out, MESSAGE_KEY_TouchEnabled, s_touch_enabled ? 1 : 0);
+  dict_write_int32(out, MESSAGE_KEY_AutoClose, s_autoclose_seconds);
+  dict_write_end(out);
+  app_message_outbox_send();
+}
+
 static void inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *t;
   Tuple *t2;
@@ -2866,25 +2880,17 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dialog_create();
       dialog_show_final(true, "Settings saved");
     }
-    // URL/token may have just become usable: warm the label list straight
-    // away, so the Filter row is populated the first time it is opened.
-    sub_request_labels();
+    // URL/token may have just become usable. The JS only learns them from a
+    // config reply (its own cache is written on 'ready'), so hand the config
+    // over: the JS refreshes the label list itself once it has credentials,
+    // which keeps this to a single outbound message per save and avoids
+    // racing the outbox.
+    send_config_to_phone();
     return;
   }
   // Config request from the JS (on 'ready'): reply with the durable copy.
   if (dict_find(iter, MESSAGE_KEY_RequestConfig)) {
-    DictionaryIterator *out;
-    if (app_message_outbox_begin(&out) == APP_MSG_OK) {
-      dict_write_cstring(out, MESSAGE_KEY_BaseUrl, s_base_url);
-      dict_write_cstring(out, MESSAGE_KEY_Token, s_token);
-      dict_write_int32(out, MESSAGE_KEY_ConfirmEnabled, s_confirm_enabled ? 1 : 0);
-      dict_write_int32(out, MESSAGE_KEY_AccentColor, (int32_t)s_accent_hex);
-      dict_write_int32(out, MESSAGE_KEY_DarkMode, s_dark_mode ? 1 : 0);
-      dict_write_int32(out, MESSAGE_KEY_TouchEnabled, s_touch_enabled ? 1 : 0);
-      dict_write_int32(out, MESSAGE_KEY_AutoClose, s_autoclose_seconds);
-      dict_write_end(out);
-      app_message_outbox_send();
-    }
+    send_config_to_phone();
     return;
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ConfirmEnabled))) {

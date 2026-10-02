@@ -791,6 +791,10 @@ Pebble.addEventListener('appmessage', function(e) {
       }));
     } catch (err) { /* best effort */ }
     console.log('appmessage: config from watch saved');
+    // Fresh credentials: refresh the label list the watch offers, so its
+    // Filter row is populated without the user running a metadata refresh
+    // first. Nothing on the watch waits for this.
+    fetchLabels();
     return;
   }
 

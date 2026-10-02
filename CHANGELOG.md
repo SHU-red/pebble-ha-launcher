@@ -11,13 +11,14 @@ The menu is two pages now, and the label filter loads itself.
 - The label list is fetched when the Shortcuts page opens (labels only: one
   request, no entity dump) instead of waiting for a manual picker or
   "Update metadata" run, and it is cached in flash — so the row cycles your
-  labels on the first open, right after a restart, and once settings are
-  saved
-- Picker row renamed to "Pick shortcuts" so the page and its first row are
-  not both called "Shortcuts"; the row reads "Fetching labels..." while the
-  list is on its way
-- A failed label fetch replies with an empty list rather than nothing, so the
-  row falls back to All instead of claiming to fetch forever
+  labels on the first open and right after a restart. The phone also
+  refreshes the list whenever it learns its HA address and token, so a
+  first-time save fills the row too
+- Picker row renamed to "Pick shortcuts": the page and its first row were
+  both called "Shortcuts"
+- No loading state on the shortcut path: the label list fills in behind the
+  UI, opening the app fetches nothing at all (the main list is on the watch),
+  and a failed label fetch simply leaves the row showing what it knows
 - Nothing to migrate: the stored label filter keeps working
 
 ## 0.7.0
