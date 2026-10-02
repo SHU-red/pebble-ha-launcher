@@ -27,6 +27,7 @@
 #define PERSIST_KEY_SUBTITLE 9       // int32: main-screen info-line field mask (SUBTITLE_*)
 #define PERSIST_KEY_VIBRATE 10       // int32: 1 = haptics on (watch-menu setting)
 #define PERSIST_KEY_LABELFILTER 11   // string: only this HA label ("" = show all)
+#define PERSIST_KEY_LABELLIST 12     // string: '\n'-joined labels from the last browse
 #define PERSIST_KEY_SHORTCUT_BASE 100 // + i: shortcut structs
 
 #define MAX_FILTER_LABELS 8          // labels offered by the Filter row (SELECT cycles)
@@ -321,6 +322,10 @@ static bool s_vibrate_enabled = true; // 1 = haptics on (watch-menu setting)
 static char s_label_filter[LABEL_NAME_LEN];
 static char s_label_names[MAX_FILTER_LABELS][LABEL_NAME_LEN]; // labels of the last fetch
 static uint8_t s_label_name_count;
+static char s_label_list_raw[200]; // last '\n'-joined list, as received (persisted)
+static bool s_labels_fetching;     // true while a labels-only fetch is in flight
+
+static void label_list_update(const char *joined);
 
 static AppTimer *s_autoclose_timer;
 
@@ -429,9 +434,14 @@ static void persist_load(void) {
   if (persist_exists(PERSIST_KEY_LABELFILTER)) {
     persist_read_string(PERSIST_KEY_LABELFILTER, s_label_filter, sizeof(s_label_filter));
   }
-  // The offered label names come from the last browse, so they are not
-  // persisted: until the next fetch the row cycles All <-> the stored label.
-  s_label_name_count = 0;
+  // The offered label names come from the last browse and are cached in
+  // flash, so the Filter row cycles correctly on the first open, before any
+  // fetch has had a chance to answer.
+  s_label_list_raw[0] = '\0';
+  if (persist_exists(PERSIST_KEY_LABELLIST)) {
+    persist_read_string(PERSIST_KEY_LABELLIST, s_label_list_raw, sizeof(s_label_list_raw));
+  }
+  label_list_update(s_label_list_raw);
 }
 
 static void persist_save_config(const char *base_url, const char *token, bool confirm,
@@ -1025,6 +1035,22 @@ static void label_list_update(const char *joined) {
     }
     p = end + 1;
   }
+}
+
+//! Accept a label list from either fetch path (the browse header or a
+//! labels-only reply): cache it in flash, rebuild the cycle list, and clear
+//! the "fetching" state so the row stops saying so.
+static void label_list_store(const char *joined) {
+  char incoming[sizeof(s_label_list_raw)];
+  snprintf(incoming, sizeof(incoming), "%s", joined);
+  // The list only changes when HA does; skip the flash write (and the record
+  // churn behind it) when this is the same list the page just re-requested.
+  if (strcmp(incoming, s_label_list_raw) != 0) {
+    snprintf(s_label_list_raw, sizeof(s_label_list_raw), "%s", incoming);
+    label_list_update(s_label_list_raw);
+    persist_write_string(PERSIST_KEY_LABELLIST, s_label_list_raw);
+  }
+  s_labels_fetching = false;
 }
 
 static void edit_commit_pending(void) {
@@ -1690,20 +1716,52 @@ static void push_update_window(void) {
 static void push_submenu_window(void);
 static void push_reorder_window(void);
 
+//! Ask the phone for the label list and nothing else: same browse template,
+//! but the reply carries only LabelList. Cheap enough to send whenever a
+//! shortcut-side screen opens, so the Filter row is never cold and the user
+//! never has to run a metadata refresh to make it usable.
+static void sub_request_labels(void) {
+  if (!s_base_url[0] || !s_token[0]) {
+    return; // unconfigured: nothing to ask for
+  }
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
+    return;
+  }
+  dict_write_int32(iter, MESSAGE_KEY_FetchLabels, 1);
+  dict_write_end(iter);
+  if (app_message_outbox_send() == APP_MSG_OK) {
+    s_labels_fetching = true;
+  }
+}
+
 // ---------------------------------------------------------------------------
-// Sub-menu (Shortcuts / Change order) + reorder mode
+// Sub-menu: two pages behind the entry row, so everything that shapes the
+// shortcut list sits together and the display/haptics settings sit together -
+//   Shortcuts: pick / order / update metadata / label filter
+//   Settings:  automatic close / info line / vibrations
+// Opening the Shortcuts page also asks the phone for the label list, so the
+// Filter row is filled without the user having to browse (or know to) first.
+// Reorder mode follows below.
 // ---------------------------------------------------------------------------
 
-static Window *s_sub_window;
-static MenuLayer *s_sub_menu;
+#define SUB_PAGE_ROOT 0
+#define SUB_PAGE_SHORTCUTS 1
+#define SUB_PAGE_SETTINGS 2
+#define SUB_PAGE_COUNT 3
+
+typedef struct {
+  Window *window;
+  MenuLayer *menu;
+  uint8_t page;        // == the array index, doubles as the callback context
+  bool fetch_labels;   // page needs the label list as soon as it opens
+} SubPage;
+
+static SubPage s_pages[SUB_PAGE_COUNT];
 static Window *s_reorder_window;
 static MenuLayer *s_reorder_menu;
 static int32_t s_reorder_held = -1;
-
-static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
-                                 void *callback_context) {
-  return 7;
-}
+static bool s_labels_fetching; // a labels-only fetch is in flight
 
 static const char *autoclose_label(int32_t seconds);
 static void autoclose_cycle(void);
@@ -1711,87 +1769,180 @@ static const char *subtitle_label(uint8_t fields);
 static void subtitle_cycle(void);
 static void vibration_cycle(void);
 static void label_filter_cycle(void);
+static void push_shortcuts_page(void);
+static void push_settings_page(void);
+
+static uint8_t sub_page_id(void *callback_context) {
+  return *(const uint8_t *)callback_context;
+}
+
+//! Repaint a page's rows if that page has ever been created. Safe when the
+//! page is not on screen: an arriving label list must not assume any page is
+//! showing, it just keeps whatever exists in sync.
+static void sub_page_reload(uint8_t page_id) {
+  if (s_pages[page_id].menu) {
+    menu_layer_reload_data(s_pages[page_id].menu);
+  }
+}
+
+static uint16_t sub_get_num_rows(MenuLayer *menu_layer, uint16_t section_index,
+                                 void *callback_context) {
+  uint8_t page = sub_page_id(callback_context);
+  if (page == SUB_PAGE_ROOT) {
+    return 2;
+  }
+  return page == SUB_PAGE_SHORTCUTS ? 4 : 3;
+}
 
 static void sub_draw_row(GContext *ctx, const Layer *cell_layer, MenuIndex *cell_index,
                          void *callback_context) {
-  if (cell_index->row == 0) {
-    menu_cell_basic_draw(ctx, cell_layer, "Shortcuts",
-                         "Pick scripts from Home Assistant", NULL);
-  } else if (cell_index->row == 1) {
-    menu_cell_basic_draw(ctx, cell_layer, "Change Order",
-                         "Select, move with up/down, select to drop", NULL);
-  } else if (cell_index->row == 2) {
-    menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
-                         "Refresh names, icons and labels from Home Assistant", NULL);
-  } else if (cell_index->row == 3) {
-    char sub[48];
+  uint8_t page = sub_page_id(callback_context);
+  uint16_t row = cell_index->row;
+  char sub[48];
+
+  if (page == SUB_PAGE_ROOT) {
+    if (row == 0) {
+      menu_cell_basic_draw(ctx, cell_layer, "Shortcuts",
+                           "Pick, order, update, filter", NULL);
+    } else {
+      menu_cell_basic_draw(ctx, cell_layer, "Settings",
+                           "Auto close, info line, vibrations", NULL);
+    }
+    return;
+  }
+
+  if (page == SUB_PAGE_SHORTCUTS) {
+    if (row == 0) {
+      menu_cell_basic_draw(ctx, cell_layer, "Pick shortcuts",
+                           "Choose scripts and scenes from Home Assistant", NULL);
+    } else if (row == 1) {
+      menu_cell_basic_draw(ctx, cell_layer, "Change Order",
+                           "Select, move with up/down, select to drop", NULL);
+    } else if (row == 2) {
+      menu_cell_basic_draw(ctx, cell_layer, "Update metadata",
+                           "Refresh names, icons and labels from Home Assistant", NULL);
+    } else if (s_labels_fetching && s_label_name_count == 0) {
+      menu_cell_basic_draw(ctx, cell_layer, "Label filter", "Fetching labels...", NULL);
+    } else {
+      snprintf(sub, sizeof(sub), "%s - SELECT cycles",
+               s_label_filter[0] ? s_label_filter : "All");
+      menu_cell_basic_draw(ctx, cell_layer, "Label filter", sub, NULL);
+    }
+    return;
+  }
+
+  // Settings page
+  if (row == 0) {
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", autoclose_label(s_autoclose_seconds));
     menu_cell_basic_draw(ctx, cell_layer, "Automatic close", sub, NULL);
-  } else if (cell_index->row == 4) {
+  } else if (row == 1) {
     // The preset names ('none - only name', ...) are longer than the
     // autoclose labels, so no ' - SELECT cycles' hint here.
     menu_cell_basic_draw(ctx, cell_layer, "Info line", subtitle_label(s_subtitle_fields), NULL);
-  } else if (cell_index->row == 5) {
-    char sub[48];
+  } else {
     snprintf(sub, sizeof(sub), "%s - SELECT cycles", s_vibrate_enabled ? "ON" : "OFF");
     menu_cell_basic_draw(ctx, cell_layer, "Vibrations", sub, NULL);
-  } else {
-    char sub[48];
-    snprintf(sub, sizeof(sub), "%s - SELECT cycles",
-             s_label_filter[0] ? s_label_filter : "All");
-    menu_cell_basic_draw(ctx, cell_layer, "Label filter", sub, NULL);
   }
 }
 
 static void sub_select_cb(MenuLayer *menu_layer, MenuIndex *cell_index, void *callback_context) {
-  if (cell_index->row == 0) {
-    push_edit_window();
-  } else if (cell_index->row == 1) {
-    push_reorder_window();
-  } else if (cell_index->row == 2) {
-    push_update_window();
-  } else if (cell_index->row == 3) {
-    autoclose_cycle();
-  } else if (cell_index->row == 4) {
-    subtitle_cycle();
-  } else if (cell_index->row == 5) {
-    vibration_cycle();
+  uint8_t page = sub_page_id(callback_context);
+  uint16_t row = cell_index->row;
+
+  if (page == SUB_PAGE_ROOT) {
+    if (row == 0) {
+      push_shortcuts_page();
+    } else {
+      push_settings_page();
+    }
+  } else if (page == SUB_PAGE_SHORTCUTS) {
+    if (row == 0) {
+      push_edit_window();
+    } else if (row == 1) {
+      push_reorder_window();
+    } else if (row == 2) {
+      push_update_window();
+    } else {
+      label_filter_cycle();
+    }
   } else {
-    label_filter_cycle();
+    if (row == 0) {
+      autoclose_cycle();
+    } else if (row == 1) {
+      subtitle_cycle();
+    } else {
+      vibration_cycle();
+    }
   }
 }
 
+//! Window handlers are shared by all pages; the page is found by identity, so
+//! the struct stays the single source of truth for its own menu.
+static SubPage *sub_page_for_window(Window *window) {
+  for (uint8_t i = 0; i < SUB_PAGE_COUNT; i++) {
+    if (s_pages[i].window == window) {
+      return &s_pages[i];
+    }
+  }
+  return NULL;
+}
+
 static void sub_window_load(Window *window) {
+  SubPage *page = sub_page_for_window(window);
+  if (!page) {
+    return;
+  }
   Layer *root = window_get_root_layer(window);
-  GRect bounds = layer_get_bounds(root);
   window_set_background_color(window, theme_bg());
-  s_sub_menu = menu_layer_create(bounds);
-  menu_layer_set_callbacks(s_sub_menu, NULL, (MenuLayerCallbacks){
+  page->menu = menu_layer_create(layer_get_bounds(root));
+  menu_layer_set_callbacks(page->menu, &page->page, (MenuLayerCallbacks){
     .get_num_rows = sub_get_num_rows,
     .draw_row = sub_draw_row,
     .select_click = sub_select_cb,
   });
-  menu_layer_set_click_config_onto_window(s_sub_menu, window);
-  menu_layer_pad_bottom_enable(s_sub_menu, true);
-  menu_layer_set_normal_colors(s_sub_menu, theme_bg(), theme_fg());
-  menu_layer_set_highlight_colors(s_sub_menu, s_accent, GColorBlack);
-  layer_add_child(root, menu_layer_get_layer(s_sub_menu));
+  menu_layer_set_click_config_onto_window(page->menu, window);
+  menu_layer_pad_bottom_enable(page->menu, true);
+  menu_layer_set_normal_colors(page->menu, theme_bg(), theme_fg());
+  menu_layer_set_highlight_colors(page->menu, s_accent, GColorBlack);
+  layer_add_child(root, menu_layer_get_layer(page->menu));
+  if (page->fetch_labels) {
+    sub_request_labels();
+  }
 }
 
 static void sub_window_unload(Window *window) {
-  menu_layer_destroy(s_sub_menu);
-  s_sub_menu = NULL;
-  window_destroy(s_sub_window);
-  s_sub_window = NULL;
+  SubPage *page = sub_page_for_window(window);
+  if (!page) {
+    return;
+  }
+  menu_layer_destroy(page->menu);
+  page->menu = NULL;
+  window_destroy(page->window);
+  page->window = NULL;
 }
 
-static void push_submenu_window(void) {
-  s_sub_window = window_create();
-  window_set_window_handlers(s_sub_window, (WindowHandlers){
+static void sub_page_push(uint8_t page_id, bool fetch_labels) {
+  SubPage *page = &s_pages[page_id];
+  page->page = page_id;
+  page->fetch_labels = fetch_labels;
+  page->window = window_create();
+  window_set_window_handlers(page->window, (WindowHandlers){
     .load = sub_window_load,
     .unload = sub_window_unload,
   });
-  window_stack_push(s_sub_window, true);
+  window_stack_push(page->window, true);
+}
+
+static void push_shortcuts_page(void) {
+  sub_page_push(SUB_PAGE_SHORTCUTS, true);
+}
+
+static void push_settings_page(void) {
+  sub_page_push(SUB_PAGE_SETTINGS, false);
+}
+
+static void push_submenu_window(void) {
+  sub_page_push(SUB_PAGE_ROOT, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1824,7 +1975,7 @@ static void autoclose_cycle(void) {
   s_autoclose_seconds = AUTOCLOSE_OPTIONS[idx];
   persist_write_int(PERSIST_KEY_AUTOCLOSE, s_autoclose_seconds);
   vibe_pulse();
-  menu_layer_reload_data(s_sub_menu);
+  sub_page_reload(SUB_PAGE_SETTINGS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1857,7 +2008,7 @@ static void subtitle_cycle(void) {
   s_subtitle_fields = SUBTITLE_PRESETS[idx];
   persist_write_int(PERSIST_KEY_SUBTITLE, (int32_t)s_subtitle_fields);
   vibe_pulse();
-  menu_layer_reload_data(s_sub_menu);
+  sub_page_reload(SUB_PAGE_SETTINGS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1872,7 +2023,7 @@ static void vibration_cycle(void) {
   if (s_vibrate_enabled) {
     vibe_pulse(); // feedback only while haptics are on
   }
-  menu_layer_reload_data(s_sub_menu);
+  sub_page_reload(SUB_PAGE_SETTINGS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1909,7 +2060,7 @@ static void label_filter_cycle(void) {
     persist_write_string(PERSIST_KEY_LABELFILTER, s_label_filter);
   }
   vibe_pulse();
-  menu_layer_reload_data(s_sub_menu);
+  sub_page_reload(SUB_PAGE_SHORTCUTS);
 }
 
 // ---- reorder mode ----
@@ -2667,7 +2818,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   }
   if ((t = dict_find(iter, MESSAGE_KEY_ShortcutCount))) {
     if ((t2 = dict_find(iter, MESSAGE_KEY_LabelList))) {
-      label_list_update(t2->value->cstring);
+      label_list_store(t2->value->cstring);
     }
     edit_begin_collect(t->value->int32);
     if (s_edit_visible && s_script_expected == 0) {
@@ -2677,6 +2828,14 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
   }
   if (dict_find(iter, MESSAGE_KEY_ScriptName) || dict_find(iter, MESSAGE_KEY_ScriptKey)) {
     edit_collect_script(iter);
+    return;
+  }
+  // Labels-only reply (FetchLabels): no entities follow, so this must be
+  // checked after ShortcutCount to leave the combined browse header to the
+  // branch above.
+  if ((t = dict_find(iter, MESSAGE_KEY_LabelList))) {
+    label_list_store(t->value->cstring);
+    sub_page_reload(SUB_PAGE_SHORTCUTS);
     return;
   }
   // Config save from Clay: the phone app delivers every messageKey value to
@@ -2707,6 +2866,9 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
       dialog_create();
       dialog_show_final(true, "Settings saved");
     }
+    // URL/token may have just become usable: warm the label list straight
+    // away, so the Filter row is populated the first time it is opened.
+    sub_request_labels();
     return;
   }
   // Config request from the JS (on 'ready'): reply with the durable copy.

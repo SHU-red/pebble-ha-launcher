@@ -1,7 +1,7 @@
 {
   "name": "pebble-ha-launcher",
   "author": "SHU-red",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "keywords": [
     "pebble-app",
     "home-assistant"
@@ -50,7 +50,8 @@
       "TouchEnabled",
       "AutoClose",
       "LabelFilter",
-      "LabelList"
+      "LabelList",
+      "FetchLabels"
     ],
     "resources": {
       "media": [

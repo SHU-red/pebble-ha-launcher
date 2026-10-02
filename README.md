@@ -25,12 +25,13 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
 - **Easy setup** — the picker fetches every available HA script and scene
   (name, area, tags, icon) automatically; pick the ones you use
 - **Label filter** — one sub-menu row (`Label filter`, SELECT cycles
-  All → every label the last fetch saw) narrows the picker to scripts and
-  scenes carrying that HA label, so a busy Home Assistant stays navigable on
-  the watch. Blank keeps today's list-everything. Labels come from the last
-  browse, and while a filter is active your kept-but-untagged shortcuts are
-  hidden in the picker and never marked missing — clear the filter to manage
-  them
+  All → every label your scripts and scenes carry) narrows the picker to the
+  entities tagged for the watch, so a busy Home Assistant stays navigable.
+  Blank lists everything, as before. The labels load themselves when the
+  Shortcuts page opens (one small request, cached on the watch — nothing to
+  refresh first), and while a filter is active your kept-but-untagged
+  shortcuts are hidden in the picker and never marked missing — clear the
+  filter to manage them
 - **Type at a glance** — the main list leads each shortcut's detail line with
   a symbol: `$` for scripts, a play triangle for scenes, then
   `·`-joined area, tags and icon name. The "Info line" sub-menu setting
@@ -62,7 +63,8 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    (e.g. `http://192.168.178.55:8123`) and your long-lived access token. The
    watch flashes "Settings saved" and stores the config durably in its own
    flash — the phone's storage is only a prefill cache.
-3. On the watch: open the app, select "Edit shortcuts" (top entry). Every
+3. On the watch: open the app and pull the 3-dot row open, then
+   Shortcuts → Pick shortcuts. Every
    script and scene row shows its state — grey `OFF` (not in the launcher),
    green `ON` (runs directly), orange `CONFIRM` (asks before running) — plus
    a four-region label/value table that follows the app theme (dark/light):
@@ -71,14 +73,18 @@ rebuilt for the newest SDKs. Built with AI, maintained with love.
    the full entity id as footer. (HA categories are websocket-only, so the
    Category value is `—` until HA exposes them to the app's REST/template
    API.)
-   Press Select to cycle the state, then run the picked shortcuts from the
-   The 3-dot entry row also holds Change Order, Update metadata,
-   Automatic close (SELECT cycles Never/3s/5s/10s/15s/30s), Info line
-   (SELECT cycles the main-screen detail fields), Vibrations (SELECT
-   toggles every haptic on/off) and Label filter (SELECT cycles All →
-   the labels seen in the last fetch; the picker then lists only the
-   tagged entities). Missing entities stay
-   listed in the picker with a red `!` so you can turn them off.
+   Press Select to cycle the state; the picked shortcuts then run from the
+   main screen.
+
+   The 3-dot entry row opens a two-page menu. **Shortcuts** holds Pick
+   shortcuts, Change Order, Update metadata and Label filter (SELECT cycles
+   All → the labels your scripts and scenes use; the list is fetched when the
+   page opens, so nothing has to be refreshed first, and the picker then
+   lists only the tagged entities). **Settings** holds Automatic close
+   (SELECT cycles Never/3s/5s/10s/15s/30s), Info line (SELECT cycles the
+   main-screen detail fields) and Vibrations (SELECT toggles every haptic
+   on/off). Missing entities stay listed in the picker with a red `!` so you
+   can turn them off.
 
 ## Build
 

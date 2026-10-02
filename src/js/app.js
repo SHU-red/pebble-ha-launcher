@@ -483,20 +483,18 @@ function fetchScripts(labelFilter) {
 }
 
 /**
- * Parse the browse response ('entity_id|name|area|labels|icon' per line, one
+ * Parse a browse response ('entity_id|name|area|labels|icon' per line, one
  * line per script AND scene entity; the entity_id domain selects the type)
- * and stream the results to the watch: one {ShortcutCount, LabelList} message
- * first, then one message per entry. Malformed lines are skipped; the sent
- * list is capped at MAX_SHORTCUTS.
+ * into the entity list plus the distinct label list. Malformed lines are
+ * skipped.
  *
  * The whole response is parsed first, so the label list the watch offers in
  * its Filter row stays complete no matter which label is currently selected —
  * otherwise picking 'pebble' would collapse the choices down to 'pebble'.
  * @param {string} responseText
- * @param {number} generation - fetch generation; a stale chain aborts
- * @param {string} labelFilter - show only this label ('' = show all)
+ * @return {{scripts: Array<Object>, labelList: Array<string>}}
  */
-function handleBrowseResponse(responseText, generation, labelFilter) {
+function parseBrowse(responseText) {
   var scripts = [];
   var lines = responseText.split('\n');
 
@@ -561,6 +559,21 @@ function handleBrowseResponse(responseText, generation, labelFilter) {
     }
   }
 
+  return { scripts: scripts, labelList: labelList };
+}
+
+/**
+ * Filter the parsed entities to the label the watch asked for and stream them
+ * back: one {ShortcutCount, LabelList} message first, then one message per
+ * entry. The sent list is capped at MAX_SHORTCUTS.
+ * @param {string} responseText
+ * @param {number} generation - fetch generation; a stale chain aborts
+ * @param {string} labelFilter - show only this label ('' = show all)
+ */
+function handleBrowseResponse(responseText, generation, labelFilter) {
+  var parsed = parseBrowse(responseText);
+  var scripts = parsed.scripts;
+
   // ponytail: labels are matched as comma-joined display names, so a HA label
   // literally named "a,b" can be neither listed nor selected exactly.
   var want = (labelFilter || '').trim().toLowerCase();
@@ -583,7 +596,62 @@ function handleBrowseResponse(responseText, generation, labelFilter) {
     visible = visible.slice(0, MAX_SHORTCUTS);
   }
 
-  sendBrowseResults(visible, labelList, generation);
+  sendBrowseResults(visible, parsed.labelList, generation);
+}
+
+/**
+ * Labels-only browse (FetchLabels): same template, but only the label list
+ * goes back. The watch sends this when a shortcut-side screen opens, so its
+ * Filter row is filled without the user running a metadata refresh first, and
+ * without dumping up to 32 entities over AppMessage to get there.
+ *
+ * A failure sends an empty list rather than nothing: the watch clears its
+ * "fetching" state on any reply, so a silent error would leave the row
+ * claiming to fetch forever.
+ */
+function fetchLabels() {
+  var config = loadConfig();
+  if (!config.baseUrl || !config.token) {
+    console.log('fetchLabels: no config, aborting');
+    return;
+  }
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', config.baseUrl + '/api/template', true);
+  xhr.setRequestHeader('Authorization', 'Bearer ' + config.token);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.timeout = BROWSE_TIMEOUT_MS;
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      sendLabels(parseBrowse(xhr.responseText).labelList);
+    } else {
+      console.log('fetchLabels: HTTP ' + xhr.status);
+      sendLabels([]);
+    }
+  };
+  xhr.onerror = function() {
+    console.log('fetchLabels: request failed');
+    sendLabels([]);
+  };
+  xhr.ontimeout = function() {
+    console.log('fetchLabels: timed out');
+    sendLabels([]);
+  };
+  xhr.send(JSON.stringify({ template: BROWSE_TEMPLATE }));
+}
+
+/**
+ * Send the label list on its own, for a labels-only refresh.
+ * @param {Array<string>} labelList
+ */
+function sendLabels(labelList) {
+  var dict = {};
+  dict.LabelList = labelList.join('\n');
+  Pebble.sendAppMessage(dict, function() {
+    console.log('labels: sent ' + labelList.length);
+  }, function(err) {
+    console.log('labels: send failed: ' + JSON.stringify(err));
+  });
 }
 
 /**
@@ -741,6 +809,13 @@ Pebble.addEventListener('appmessage', function(e) {
     var labelFilter = payloadValue(payload, 'LabelFilter');
     console.log('appmessage: fetching scripts');
     fetchScripts(labelFilter === undefined || labelFilter === null ? '' : String(labelFilter));
+    return;
+  }
+
+  var labelsFlag = payloadValue(payload, 'FetchLabels');
+  if (labelsFlag !== undefined) {
+    console.log('appmessage: fetching labels');
+    fetchLabels();
     return;
   }
 
